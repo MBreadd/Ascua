@@ -1,5 +1,17 @@
 {
   "appId": "com.luismario.ascua",
   "appName": "Ascua",
-  "webDir": "www"
+  "webDir": "www",
+    "server": {
+    "url": "http://192.168.18.10:8080",
+    "cleartext": true
+  },
+  "plugins": {
+    "StatusBar": {
+      "style": "DARK",
+      "backgroundColor": "#121212",
+      "overlaysWebView": false
+    }
+    
+  }
 }

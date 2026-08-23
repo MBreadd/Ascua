@@ -1,17 +1,22 @@
-const CACHE = 'ascua-v1';
+const CACHE = 'ascua-v14';
 
 const LOCAL = [
   './',
   './index.html',
   './manifest.json',
   './icon-192.png',
-  './icon-512.png'
+  './icon-512.png',
+  './pdf.min.js',
+  './pdf.worker.min.js',
+  './fonts/eb-garamond-400.woff2',
+  './fonts/eb-garamond-500.woff2',
+  './fonts/hanken-grotesk-300.woff2',
+  './fonts/hanken-grotesk-400.woff2',
+  './fonts/hanken-grotesk-500.woff2',
+  './fonts/hanken-grotesk-600.woff2'
 ];
 
-const EXTERNO = [
-  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
-];
+const EXTERNO = [];
 
 self.addEventListener('install', ev => {
   ev.waitUntil((async () => {
