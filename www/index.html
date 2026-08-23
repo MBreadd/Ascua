@@ -219,6 +219,29 @@ async function loadState(){
 function save(){clearTimeout(saveT);saveT=setTimeout(()=>{kvSet('state',S).catch(()=>{});},350);}
 function saveNow(){clearTimeout(saveT);return kvSet('state',S).catch(()=>{});}
 
+const REMINDER_ID=1001;
+async function programarRecordatorio(){
+  if(!window.Capacitor)return;
+  const LocalNotifications=window.Capacitor.Plugins&&window.Capacitor.Plugins.LocalNotifications;
+  if(!LocalNotifications)return;
+  try{
+    let permiso=await LocalNotifications.checkPermissions();
+    if(permiso.display==='prompt'||permiso.display==='prompt-with-rationale'){
+      permiso=await LocalNotifications.requestPermissions();
+    }
+    if(permiso.display!=='granted')return;
+    await LocalNotifications.cancel({notifications:[{id:REMINDER_ID}]});
+    await LocalNotifications.schedule({notifications:[{
+      id:REMINDER_ID,
+      title:'Ascua',
+      body:'Es hora de encender tu hábito de lectura.',
+      schedule:{on:{hour:Number(S.reminderHour),minute:0},allowWhileIdle:true},
+      autoCancel:true,
+      isExactNotification:true
+    }]});
+  }catch(err){console.warn('No se pudo programar el recordatorio diario.',err);}
+}
+
 function today(){
   const k=dayKey();
   if(!S.history[k])S.history[k]={startPage:S.page,maxPage:S.page,seconds:0};
@@ -500,7 +523,8 @@ document.getElementById('replaceIn').onchange=ev=>guardarLibro(ev.target.files[0
 document.getElementById('goalIn').onchange=ev=>{
   S.goal=Math.max(1,Math.min(200,parseInt(ev.target.value,10)||10));ev.target.value=S.goal;save();};
 document.getElementById('hourIn').onchange=ev=>{
-  S.reminderHour=Math.max(0,Math.min(23,parseInt(ev.target.value,10)||21));ev.target.value=S.reminderHour;save();};
+  S.reminderHour=Math.max(0,Math.min(23,parseInt(ev.target.value,10)||21));ev.target.value=S.reminderHour;save();
+  programarRecordatorio();};
 
 document.getElementById('exportBtn').onclick=()=>{
   const blob=new Blob([JSON.stringify(S,null,2)],{type:'application/json'});
@@ -541,6 +565,7 @@ window.addEventListener('pagehide',()=>{
 /* ---------- arranque ---------- */
 (async function(){
   await loadState();
+  await programarRecordatorio();
   if(navigator.storage&&navigator.storage.persist){
     try{
       const ya=await navigator.storage.persisted();

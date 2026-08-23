@@ -1,0 +1,27 @@
+{
+  "name": "ascua",
+  "version": "1.0.0",
+  "description": "Lector de PDF para Android con sistema de hábito de lectura. Un libro a la vez, meta diaria de páginas y racha con días de gracia. PWA instalable, funciona sin conexión y no manda ningún dato a ningún servidor.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MBreadd/Ascua.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/MBreadd/Ascua/issues"
+  },
+  "homepage": "https://github.com/MBreadd/Ascua#readme",
+  "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/cli": "^8.5.0",
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/local-notifications": "^8.3.1"
+  }
+}
