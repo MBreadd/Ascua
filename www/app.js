@@ -650,12 +650,15 @@ wrap.addEventListener('touchend',ev=>{
   if(ev.touches.length>0)return;
   if(ignorarToque){ignorarToque=false;programarPost(libroActual.page);return;}
   if(haySeleccion())return;
-  const dx=ev.changedTouches[0].clientX-tX, dy=ev.changedTouches[0].clientY-tY;
-  if(Math.abs(dx)>60&&Math.abs(dx)>Math.abs(dy)*1.5){irA(libroActual.page+(dx<0?1:-1));chrome(false);return;}
   if(moved){programarPost(libroActual.page);return;}
-  const x=ev.changedTouches[0].clientX/window.innerWidth;
-  if(x<.3){irA(libroActual.page-1);return;}
-  if(x>.7){irA(libroActual.page+1);return;}
+  // Mitad inferior de la pantalla = controles de página (izquierda=retroceder,
+  // derecha=avanzar); mitad superior = zoom/paneo, nunca cambia de página,
+  // para que un gesto de acercar/mover no dispare un cambio de página sin querer.
+  const cx=ev.changedTouches[0].clientX, cy=ev.changedTouches[0].clientY;
+  if(cy/window.innerHeight>=.5){
+    if(cx/window.innerWidth<.5)irA(libroActual.page-1); else irA(libroActual.page+1);
+    return;
+  }
   chrome(!document.getElementById('topBar').classList.contains('show'));
   programarPost(libroActual.page);
 });
@@ -667,9 +670,11 @@ wrap.addEventListener('touchcancel',()=>{
 },{passive:true});
 wrap.addEventListener('click',ev=>{
   if('ontouchstart' in window||haySeleccion())return;
-  const x=ev.clientX/window.innerWidth;
-  if(x<.3)irA(libroActual.page-1); else if(x>.7)irA(libroActual.page+1);
-  else chrome(!document.getElementById('topBar').classList.contains('show'));
+  if(ev.clientY/window.innerHeight>=.5){
+    if(ev.clientX/window.innerWidth<.5)irA(libroActual.page-1); else irA(libroActual.page+1);
+  }else{
+    chrome(!document.getElementById('topBar').classList.contains('show'));
+  }
 });
 let scT=null;
 wrap.addEventListener('scroll',()=>{clearTimeout(scT);
