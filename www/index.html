@@ -59,6 +59,8 @@ nav svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.6}
 .row{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:20px 0;border-bottom:1px solid var(--outline-var)}
 .row p{margin:0;font-size:15px}
 .row small{display:block;color:var(--on-surface-var);font-size:13px;margin-top:4px;line-height:1.5}
+.row-actions{display:flex;gap:8px;flex:none}
+.btn.sm{width:auto;padding:8px 12px}
 input[type=number],select{background:var(--surface-high);border:1px solid var(--outline-var);color:var(--on-surface);
   padding:10px 12px;font-family:var(--sans);font-size:15px;width:88px;text-align:center}
 .note{font-size:13px;color:var(--on-surface-var);line-height:1.6;margin:24px 0 0}
@@ -142,6 +144,13 @@ input[type=range]{width:100%;accent-color:var(--primary-c);background:transparen
   </div>
   <div class="spacer"></div>
   <button class="btn solid" id="goRead">Seguir leyendo</button>
+
+  <div class="label" style="margin-top:40px">Tu biblioteca</div>
+  <div id="library"></div>
+  <label class="btn ghost" style="text-align:center;margin-top:12px">
+    Añadir libro
+    <input type="file" id="addBookIn" accept="application/pdf,.pdf" class="hidden">
+  </label>
 </section>
 
 <!-- SETTINGS -->
@@ -165,10 +174,8 @@ input[type=range]{width:100%;accent-color:var(--primary-c);background:transparen
     <button class="btn ghost" id="exportBtn">Exportar mi progreso</button>
     <label class="btn ghost" style="text-align:center">Restaurar desde archivo
       <input type="file" id="importIn" accept="application/json,.json" class="hidden"></label>
-    <label class="btn ghost" style="text-align:center">Cambiar de libro
-      <input type="file" id="replaceIn" accept="application/pdf,.pdf" class="hidden"></label>
   </div>
-  <p class="note">Al cambiar de libro se borra el PDF actual y su página guardada. Tu racha y tu historial de días se mantienen.</p>
+  <p class="note">Para añadir o quitar libros, ve a la pantalla de Hoy.</p>
   <div class="spacer"></div>
 </section>
 

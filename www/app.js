@@ -266,6 +266,37 @@ function pintarHome(){
     ? 'Terminaste este libro' : 'A este ritmo terminas el '+fechaLarga(addDays(dayKey(),Math.ceil(rest/rt))));
 
   document.getElementById('goRead').textContent = lib&&lib.page>1?'Seguir leyendo':'Empezar a leer';
+
+  pintarBiblioteca();
+}
+
+function pintarBiblioteca(){
+  const cont=document.getElementById('library');
+  cont.innerHTML='';
+  const libros=Object.values(S.books).sort((a,b)=>b.lastOpenedAt.localeCompare(a.lastOpenedAt));
+  for(const libro of libros){
+    const row=document.createElement('div');
+    row.className='row';
+
+    const info=document.createElement('div');
+    const p=document.createElement('p');p.textContent=libro.name||'Libro';
+    const small=document.createElement('small');
+    small.textContent=libro.totalPages?('Página '+libro.page+' de '+libro.totalPages):'—';
+    info.appendChild(p);info.appendChild(small);
+
+    const acciones=document.createElement('div');
+    acciones.className='row-actions';
+    const btnLeer=document.createElement('button');
+    btnLeer.className='btn ghost sm';btnLeer.textContent='Leer';
+    btnLeer.dataset.id=libro.id;btnLeer.dataset.accion='leer';
+    const btnEliminar=document.createElement('button');
+    btnEliminar.className='btn ghost sm';btnEliminar.textContent='Eliminar';
+    btnEliminar.dataset.id=libro.id;btnEliminar.dataset.accion='eliminar';
+    acciones.appendChild(btnLeer);acciones.appendChild(btnEliminar);
+
+    row.appendChild(info);row.appendChild(acciones);
+    cont.appendChild(row);
+  }
 }
 
 function pintarSet(){
@@ -663,32 +694,67 @@ document.getElementById('pageRange').oninput=ev=>{
 document.getElementById('pageRange').onchange=ev=>irA(parseInt(/** @type {HTMLInputElement} */(ev.target).value,10));
 
 /* ---------- carga de archivo ---------- */
-/**
- * @param {File} file
- * @param {boolean} [reset]
- */
-async function guardarLibro(file,reset){
+/** @param {File} file */
+async function agregarLibro(file){
   if(!file)return;
   if(file.type&&file.type.indexOf('pdf')===-1){toast('Ese archivo no es un PDF.');return;}
   toast('Guardando el libro…');
+  const id=idLibro();
   try{
-    const id=(S.currentBookId&&S.books[S.currentBookId])?S.currentBookId:idLibro();
     await kvSet('book:'+id,{name:file.name,blob:file});
-    const libro=S.books[id]||(S.books[id]={id,name:'',page:1,scrollTop:0,zoom:1,totalPages:0,
-      addedAt:dayKey(),lastOpenedAt:dayKey()});
-    libro.name=file.name.replace(/\.pdf$/i,'');
-    if(reset){libro.page=1;libro.scrollTop=0;libro.zoom=1;}
-    S.currentBookId=id;
+    S.books[id]={id,name:file.name.replace(/\.pdf$/i,''),page:1,scrollTop:0,zoom:1,totalPages:0,
+      addedAt:dayKey(),lastOpenedAt:dayKey()};
     cache.forEach(soltar);cache.clear();cacheKey='';
     const ok=await abrirLibro(id);
-    if(!ok){toast('No se pudo leer el PDF.');return;}
+    if(!ok){
+      delete S.books[id]; await kvDel('book:'+id);
+      toast('No se pudo leer el PDF.');return;
+    }
     await saveNow();
     pintarHome();show('scHome');
-    toast('Listo: '+libro.totalPages+' páginas.');
-  }catch(err){toast('No se pudo guardar. Puede que no haya espacio en el teléfono.');}
+    toast('Listo: '+S.books[id].totalPages+' páginas.');
+  }catch(err){
+    delete S.books[id]; await kvDel('book:'+id).catch(()=>{});
+    toast('No se pudo guardar. Puede que no haya espacio en el teléfono.');
+  }
 }
-document.getElementById('fileIn').onchange=ev=>guardarLibro(/** @type {HTMLInputElement} */(ev.target).files[0],true);
-document.getElementById('replaceIn').onchange=ev=>guardarLibro(/** @type {HTMLInputElement} */(ev.target).files[0],true);
+/** @param {string} id */
+async function leerLibro(id){
+  if(!S.books[id])return;
+  if(!pdfDoc||!libroActual||S.currentBookId!==id){
+    const ok=await abrirLibro(id);
+    if(!ok){toast('No se pudo leer el PDF.');return;}
+  }
+  abrirLector();
+}
+/** @param {string} id */
+async function eliminarLibro(id){
+  const libro=S.books[id];
+  if(!libro)return;
+  if(!confirm('¿Eliminar "'+libro.name+'"? Se borra el PDF guardado; tu racha y tu historial no se tocan.'))return;
+  if(S.currentBookId===id){
+    if(pdfDoc){try{await pdfDoc.destroy();}catch(e){}pdfDoc=null;}
+    if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=null;}
+    libroActual=null;
+    const restantes=Object.keys(S.books).filter(x=>x!==id);
+    S.currentBookId=restantes[0]||null;
+  }
+  delete S.books[id];
+  await kvDel('book:'+id);
+  await saveNow();
+  pintarHome();
+  toast('Libro eliminado.');
+}
+document.getElementById('fileIn').onchange=ev=>agregarLibro(/** @type {HTMLInputElement} */(ev.target).files[0]);
+document.getElementById('addBookIn').onchange=ev=>agregarLibro(/** @type {HTMLInputElement} */(ev.target).files[0]);
+document.getElementById('library').addEventListener('click',ev=>{
+  const btn=/** @type {HTMLElement} */(ev.target).closest('button');
+  if(!btn)return;
+  const id=btn.dataset.id;
+  if(!id)return;
+  if(btn.dataset.accion==='leer')leerLibro(id);
+  else if(btn.dataset.accion==='eliminar')eliminarLibro(id);
+});
 
 /* ---------- ajustes ---------- */
 document.getElementById('goalIn').onchange=ev=>{
