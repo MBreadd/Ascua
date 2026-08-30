@@ -1,0 +1,771 @@
+// @ts-check
+
+/**
+ * @typedef {Object} Libro
+ * @property {string} id
+ * @property {string} name
+ * @property {number} page
+ * @property {number} scrollTop
+ * @property {number} zoom
+ * @property {number} totalPages
+ * @property {string} addedAt
+ * @property {string} lastOpenedAt
+ */
+/**
+ * @typedef {Object} EntradaLibroDia
+ * @property {number} startPage
+ * @property {number} maxPage
+ */
+/**
+ * @typedef {Object} EntradaDia
+ * @property {Object<string,EntradaLibroDia>} books
+ * @property {number} seconds
+ */
+/**
+ * @typedef {Object} Estado
+ * @property {number} schemaVersion
+ * @property {Object<string,Libro>} books
+ * @property {string|null} currentBookId
+ * @property {number} goal
+ * @property {number} reminderHour
+ * @property {Object<string,EntradaDia>} history
+ * @property {string} startedAt
+ */
+
+const PDFJS = window['pdfjs-dist/build/pdf'] || window.pdfjsLib;
+if (PDFJS) PDFJS.GlobalWorkerOptions.workerSrc =
+  'pdf.worker.min.js';
+
+/* ---------- almacenamiento ---------- */
+function db(){return new Promise((res,rej)=>{const r=indexedDB.open('ascua',1);
+  r.onupgradeneeded=()=>{const d=r.result;if(!d.objectStoreNames.contains('kv'))d.createObjectStore('kv');};
+  r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});}
+async function kvGet(k){const d=await db();return new Promise((res,rej)=>{
+  const q=d.transaction('kv','readonly').objectStore('kv').get(k);
+  q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error);});}
+async function kvSet(k,v){const d=await db();return new Promise((res,rej)=>{
+  const q=d.transaction('kv','readwrite').objectStore('kv').put(v,k);
+  q.onsuccess=()=>res(true);q.onerror=()=>rej(q.error);});}
+async function kvDel(k){const d=await db();return new Promise((res,rej)=>{
+  const q=d.transaction('kv','readwrite').objectStore('kv').delete(k);
+  q.onsuccess=()=>res(true);q.onerror=()=>rej(q.error);});}
+
+/* ---------- fechas ---------- */
+function dayKey(d){d=d||new Date();
+  return new Date(d.getTime()-d.getTimezoneOffset()*6e4).toISOString().slice(0,10);}
+function addDays(k,n){const d=new Date(k+'T12:00:00');d.setDate(d.getDate()+n);return dayKey(d);}
+const MES=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+function fechaLarga(k){const d=new Date(k+'T12:00:00');return d.getDate()+' de '+MES[d.getMonth()];}
+
+/* ---------- estado ---------- */
+const MIN_SEG=120, GRACIA_MES=2;
+/** @type {Estado} */
+let S=null;
+let pdfDoc=null, blobUrl=null, saveT=null;
+/** @type {Libro|null} */
+let libroActual=null;
+
+/** @returns {Estado} */
+function fresh(){return{schemaVersion:2,books:{},currentBookId:null,goal:10,
+  reminderHour:21,history:{},startedAt:dayKey()};}
+
+function idLibro(){return 'b'+Date.now().toString(36)+Math.random().toString(36).slice(2,7);}
+
+/**
+ * @param {any} raw
+ * @returns {Promise<Estado>}
+ */
+async function migrarAMultiLibro(raw){
+  const nuevo=fresh();
+  if(raw){
+    if(raw.goal!=null)nuevo.goal=raw.goal;
+    if(raw.reminderHour!=null)nuevo.reminderHour=raw.reminderHour;
+    if(raw.startedAt)nuevo.startedAt=raw.startedAt;
+    if(raw.history)nuevo.history=raw.history;
+    if(raw.books)nuevo.books=raw.books;
+    if(raw.currentBookId)nuevo.currentBookId=raw.currentBookId;
+  }
+  const blobViejo=await kvGet('book');
+  const teniaLibroViejo=!!(raw&&(raw.bookName||raw.totalPages||raw.page));
+  if(teniaLibroViejo||(blobViejo&&blobViejo.blob)){
+    const id='b'+((raw&&raw.startedAt)||dayKey()).replace(/-/g,'')+'0';
+    if(!nuevo.books[id]){
+      nuevo.books[id]={
+        id,
+        name:(raw&&raw.bookName)||((blobViejo&&blobViejo.name)||'').replace(/\.pdf$/i,'')||'Libro',
+        page:(raw&&raw.page)||1, scrollTop:(raw&&raw.scrollTop)||0, zoom:(raw&&raw.zoom)||1,
+        totalPages:(raw&&raw.totalPages)||0,
+        addedAt:(raw&&raw.startedAt)||dayKey(), lastOpenedAt:dayKey()
+      };
+    }
+    nuevo.currentBookId=id;
+    if(blobViejo&&blobViejo.blob){
+      await kvSet('book:'+id,blobViejo);
+      await kvDel('book');
+    }
+    const out={};
+    for(const k in nuevo.history){
+      /** @type {any} */
+      const e=nuevo.history[k];
+      if(e&&e.books){out[k]=e;continue;}
+      out[k]=e&&(e.startPage!=null||e.maxPage!=null)
+        ?{books:{[id]:{startPage:e.startPage||0,maxPage:e.maxPage||0}},seconds:e.seconds||0}
+        :(e||{books:{},seconds:0});
+    }
+    nuevo.history=out;
+  }
+  nuevo.schemaVersion=2;
+  return nuevo;
+}
+
+/** @returns {Promise<void>} */
+async function loadState(){
+  const raw=await kvGet('state');
+  if(!raw||!(raw.schemaVersion>=2)){
+    S=await migrarAMultiLibro(raw);
+    await kvSet('state',S).catch(()=>{});
+  }else{
+    S=Object.assign(fresh(),raw);
+    if(!S.history)S.history={};
+    if(!S.books)S.books={};
+  }
+}
+function save(){clearTimeout(saveT);saveT=setTimeout(()=>{kvSet('state',S).catch(()=>{});},350);}
+function saveNow(){clearTimeout(saveT);return kvSet('state',S).catch(()=>{});}
+
+const REMINDER_ID=1001;
+async function programarRecordatorio(){
+  if(!window.Capacitor)return;
+  const LocalNotifications=window.Capacitor.Plugins&&window.Capacitor.Plugins.LocalNotifications;
+  if(!LocalNotifications)return;
+  try{
+    let permiso=await LocalNotifications.checkPermissions();
+    if(permiso.display==='prompt'||permiso.display==='prompt-with-rationale'){
+      permiso=await LocalNotifications.requestPermissions();
+    }
+    if(permiso.display!=='granted')return;
+    await LocalNotifications.cancel({notifications:[{id:REMINDER_ID}]});
+    await LocalNotifications.schedule({notifications:[{
+      id:REMINDER_ID,
+      title:'Ascua',
+      body:'Es hora de encender tu hábito de lectura.',
+      schedule:{on:{hour:Number(S.reminderHour),minute:0},allowWhileIdle:true},
+      autoCancel:true,
+      isExactNotification:true
+    }]});
+  }catch(err){console.warn('No se pudo programar el recordatorio diario.',err);}
+}
+
+/** @returns {EntradaDia} */
+function today(){
+  const k=dayKey();
+  if(!S.history[k])S.history[k]={books:{},seconds:0};
+  return S.history[k];
+}
+/**
+ * @param {EntradaDia} e
+ * @param {string} bookId
+ * @param {number} paginaActual
+ * @returns {EntradaLibroDia}
+ */
+function entradaDeLibro(e,bookId,paginaActual){
+  if(!e.books[bookId])e.books[bookId]={startPage:paginaActual,maxPage:paginaActual};
+  return e.books[bookId];
+}
+/**
+ * @param {EntradaDia|undefined} e
+ * @returns {number}
+ */
+function paginasDe(e){
+  if(!e)return 0;
+  let t=0;
+  for(const id in e.books)t+=Math.max(0,e.books[id].maxPage-e.books[id].startPage);
+  return t;
+}
+/** @param {EntradaDia|undefined} e */
+function cuenta(e){return !!e && paginasDe(e)>=1 && e.seconds>=MIN_SEG;}
+
+function graciaUsada(mes){
+  let n=0,k=addDays(dayKey(),-1);
+  for(let i=0;i<40;i++){
+    if(k.slice(0,7)!==mes)break;
+    if(k<S.startedAt)break;
+    if(!cuenta(S.history[k]))n++;
+    k=addDays(k,-1);
+  }
+  return n;
+}
+
+function racha(){
+  let n=0,usadas={},k=dayKey();
+  if(!cuenta(S.history[k]))k=addDays(k,-1);
+  for(let i=0;i<500;i++){
+    if(k<S.startedAt)break;
+    if(cuenta(S.history[k])){n++;}
+    else{
+      if(n===0)break;
+      const m=k.slice(0,7);usadas[m]=(usadas[m]||0)+1;
+      if(usadas[m]>GRACIA_MES)break;
+    }
+    k=addDays(k,-1);
+  }
+  return n;
+}
+
+function ritmo(){
+  let tot=0,dias=0,k=dayKey();
+  for(let i=0;i<21;i++){
+    const e=S.history[k];
+    if(e&&paginasDe(e)>0){tot+=paginasDe(e);dias++;}
+    k=addDays(k,-1);
+  }
+  return dias?tot/dias:0;
+}
+
+/* ---------- pantallas ---------- */
+function show(id){
+  ['scOnboard','scHome','scSet'].forEach(x=>document.getElementById(x).classList.toggle('on',x===id));
+  document.getElementById('nav').classList.toggle('hidden',id==='scOnboard');
+  document.getElementById('tabHome').classList.toggle('act',id==='scHome');
+  document.getElementById('tabSet').classList.toggle('act',id==='scSet');
+}
+function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('on');
+  setTimeout(()=>t.classList.remove('on'),3200);}
+
+function pintarHome(){
+  const r=racha(), e=today(), hoy=paginasDe(e);
+  document.getElementById('streakNum').textContent=String(r);
+  document.getElementById('streakLabel').textContent=r===1?'día de racha':'días de racha';
+
+  const w=document.getElementById('week');w.innerHTML='';
+  const hk=dayKey(), dow=(new Date(hk+'T12:00:00').getDay()+6)%7;
+  for(let i=0;i<7;i++){
+    const k=addDays(hk,i-dow), ent=S.history[k], d=document.createElement('div');
+    d.className='dot';
+    if(k===hk){d.className='dot today';d.innerHTML='<i></i>';}
+    else if(k>hk){d.className='dot';}
+    else if(ent&&paginasDe(ent)>=S.goal&&ent.seconds>=MIN_SEG)d.className='dot full';
+    else if(cuenta(ent))d.className='dot part';
+    else if(k>=S.startedAt)d.className='dot frozen';
+    w.appendChild(d);
+  }
+  const falta=Math.max(0,S.goal-hoy);
+  document.getElementById('todayLine').textContent = hoy===0
+    ? 'Hoy no has leído'
+    : (falta>0 ? hoy+' de '+S.goal+' páginas hoy · faltan '+falta : '¡Meta de hoy cumplida!');
+
+  const lib=S.books[S.currentBookId]||null;
+  document.getElementById('bookTitle').textContent=lib?lib.name:'Sin libro';
+  document.getElementById('bookPages').textContent=lib&&lib.totalPages
+    ? 'Página '+lib.page+' de '+lib.totalPages : '—';
+  const pct=lib&&lib.totalPages?Math.round(lib.page/lib.totalPages*100):0;
+  document.getElementById('barFill').style.width=pct+'%';
+
+  const rest=lib?Math.max(0,lib.totalPages-lib.page):0, rt=ritmo()||S.goal;
+  document.getElementById('projection').textContent = !lib ? '—' : (rest===0
+    ? 'Terminaste este libro' : 'A este ritmo terminas el '+fechaLarga(addDays(dayKey(),Math.ceil(rest/rt))));
+
+  document.getElementById('goRead').textContent = lib&&lib.page>1?'Seguir leyendo':'Empezar a leer';
+}
+
+function pintarSet(){
+  /** @type {HTMLInputElement} */(document.getElementById('goalIn')).value=String(S.goal);
+  /** @type {HTMLInputElement} */(document.getElementById('hourIn')).value=String(S.reminderHour);
+  const q=GRACIA_MES-graciaUsada(dayKey().slice(0,7));
+  document.getElementById('graceLeft').textContent=
+    'Te quedan '+Math.max(0,q)+' de '+GRACIA_MES+' este mes. Un día de gracia congela la racha en vez de romperla.';
+}
+
+/* ---------- lector ---------- */
+const wrap=document.getElementById('pageWrap'), stage=document.getElementById('pageStage'),
+      surface=document.getElementById('pageSurface'),
+      canvas=/** @type {HTMLCanvasElement} */(document.getElementById('pageCanvas')),
+      textLayer=document.getElementById('textLayer'), spin=document.getElementById('spin');
+let cache=new Map(), pending=new Map(), cacheKey='', renderTok=0, preloadTok=0;
+let canvasBaseW=0,canvasBaseH=0,canvasQuality=1,qualityT=null,qualityTok=0,qualityTask=null;
+let textTok=0,textRenderTask=null,postTimers=[],interactuando=false;
+
+/**
+ * @param {string} [bookId]
+ * @returns {Promise<boolean>}
+ */
+async function abrirLibro(bookId){
+  bookId=bookId||S.currentBookId;
+  const libro=bookId&&S.books[bookId];
+  if(!libro)return false;
+  const rec=await kvGet('book:'+bookId);
+  if(!rec||!rec.blob)return false;
+  if(pdfDoc){try{await pdfDoc.destroy();}catch(e){}pdfDoc=null;}
+  if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=null;}
+  blobUrl=URL.createObjectURL(rec.blob);
+  pdfDoc=await PDFJS.getDocument({url:blobUrl}).promise;
+  libro.totalPages=pdfDoc.numPages;
+  if(libro.page>libro.totalPages)libro.page=libro.totalPages;
+  libroActual=libro; S.currentBookId=bookId; libro.lastOpenedAt=dayKey();
+  return true;
+}
+
+function keyNow(){return String(Math.round(wrap.clientWidth));}
+function densidadBase(){return Math.min(window.devicePixelRatio||1,2);}
+function soltar(c){c.width=0;c.height=0;}
+function revisarCache(){const k=keyNow();
+  if(k!==cacheKey){cache.forEach(soltar);cache.clear();cacheKey=k;}}
+function podar(n){
+  cache.forEach((c,k)=>{if(k<n-1||k>n+3){soltar(c);cache.delete(k);}});
+  let pixels=0;cache.forEach(c=>pixels+=c.width*c.height);
+  const maxPixelsCache=10000000;
+  for(const k of [n-1,n+3,n+2]){
+    if(pixels<=maxPixelsCache)break;
+    const c=cache.get(k);if(!c)continue;
+    pixels-=c.width*c.height;soltar(c);cache.delete(k);
+  }
+}
+
+async function pintarOff(n,calidad=1,alCrearTarea=null,segundoPlano=false,densidad=null,promover=true){
+  const page=await pdfDoc.getPage(n);
+  const base=page.getViewport({scale:1});
+  const dpr=densidad===null?densidadBase():densidad;
+  const ajuste=wrap.clientWidth/base.width;
+  let escala=ajuste*dpr*Math.max(1,calidad);
+  let vp=page.getViewport({scale:escala});
+  const maxPixels=4000000;
+  if(vp.width*vp.height>maxPixels){
+    escala*=Math.sqrt(maxPixels/(vp.width*vp.height));
+    vp=page.getViewport({scale:escala});
+  }
+  /** @type {any} */
+  const off=document.createElement('canvas');
+  off.width=Math.round(vp.width); off.height=Math.round(vp.height);
+  const tarea=page.render({canvasContext:off.getContext('2d',{alpha:false}),viewport:vp});
+  if(alCrearTarea)alCrearTarea(tarea);
+  if(segundoPlano)tarea.onContinue=continuar=>{
+    if(promover&&libroActual&&n===libroActual.page){continuar();return;}
+    if(window.requestIdleCallback)requestIdleCallback(()=>continuar(),{timeout:120});
+    else setTimeout(continuar,16);
+  };
+  await tarea.promise;
+  off._w=base.width*ajuste; off._h=base.height*ajuste;
+  off._density=dpr;off._quality=calidad*(dpr/densidadBase());
+  page.cleanup();
+  return off;
+}
+function aplicarTamanoZoom(zoom){
+  if(!canvasBaseW||!canvasBaseH)return;
+  surface.style.width=(canvasBaseW*zoom)+'px';
+  surface.style.height=(canvasBaseH*zoom)+'px';
+  textLayer.style.width=canvasBaseW+'px';textLayer.style.height=canvasBaseH+'px';
+  textLayer.style.transform='scale('+zoom+')';
+}
+function aplicarZoom(){aplicarTamanoZoom(libroActual?libroActual.zoom:1);}
+function volcar(off){
+  canvas.width=off.width; canvas.height=off.height;
+  canvasBaseW=off._w;canvasBaseH=off._h;canvasQuality=off._quality||1;aplicarZoom();
+  canvas.getContext('2d',{alpha:false}).drawImage(off,0,0);
+}
+function cancelarCalidad(){
+  clearTimeout(qualityT);qualityTok++;
+  if(qualityTask){try{qualityTask.cancel();}catch(e){}qualityTask=null;}
+}
+function programarCalidad(n){
+  cancelarCalidad();
+  const zoomActual=libroActual?libroActual.zoom:1;
+  if(zoomActual<=1.05){
+    const base=cache.get(n);if(canvasQuality>1.05&&base)volcar(base);return;
+  }
+  if(canvasQuality>=zoomActual-.05)return;
+  const tok=qualityTok,pagina=n,zoom=zoomActual,k=cacheKey;
+  qualityT=setTimeout(async()=>{
+    const guardada=cache.get(pagina);
+    if(!guardada||(guardada._density||0)<densidadBase()-.01){
+      if(tok===qualityTok&&pagina===libroActual.page)programarCalidad(pagina);return;
+    }
+    let off;
+    try{off=await pintarOff(pagina,zoom,t=>qualityTask=t);}catch(e){qualityTask=null;return;}
+    qualityTask=null;
+    if(tok!==qualityTok||pagina!==libroActual.page||k!==cacheKey||Math.abs(zoom-libroActual.zoom)>.02){soltar(off);return;}
+    volcar(off);soltar(off);
+  },1200);
+}
+async function pintarTexto(n){
+  const tok=++textTok;
+  textLayer.replaceChildren();
+  if(!PDFJS.renderTextLayer)return;
+  try{
+    const page=await pdfDoc.getPage(n),base=page.getViewport({scale:1});
+    const vp=page.getViewport({scale:wrap.clientWidth/base.width});
+    const contenido=await page.getTextContent();
+    if(tok!==textTok||n!==libroActual.page)return;
+    textLayer.style.width=vp.width+'px';textLayer.style.height=vp.height+'px';
+    textLayer.style.transform='scale('+libroActual.zoom+')';
+    textLayer.style.setProperty('--scale-factor',vp.scale);
+    const tarea=PDFJS.renderTextLayer({textContentSource:contenido,container:textLayer,
+      viewport:vp,textDivs:[]});
+    textRenderTask=tarea;
+    if(tarea&&tarea.promise)await tarea.promise;
+    if(tok===textTok)textRenderTask=null;
+  }catch(e){if(tok===textTok){textRenderTask=null;textLayer.replaceChildren();}}
+}
+function cancelarPost(){
+  postTimers.forEach(clearTimeout);postTimers=[];
+  if(textRenderTask){try{textRenderTask.cancel();}catch(e){}textRenderTask=null;
+    textTok++;textLayer.replaceChildren();}
+  cancelarCalidad();
+}
+function despues(ms,fn){const id=setTimeout(()=>{
+  postTimers=postTimers.filter(x=>x!==id);fn();
+},ms);postTimers.push(id);}
+function programarPost(n){
+  postTimers.forEach(clearTimeout);postTimers=[];
+  const actual=cache.get(n),baseDpr=densidadBase();
+  if(actual&&actual._density>=baseDpr-.01&&canvasQuality<.99&&!interactuando)volcar(actual);
+  else if(!actual||actual._density<baseDpr-.01)despues(320,async()=>{
+    let mejor;
+    try{mejor=await obtenerOff(n,true,false,false);}catch(e){return;}
+    if(n===libroActual.page&&mejor&&!interactuando&&canvasQuality<1.05)volcar(mejor);
+  });
+  if(!textLayer.childElementCount)despues(850,()=>{
+    if(n===libroActual.page)pintarTexto(n);
+  });
+  programarCalidad(n);
+}
+function actualizarPosicion(n,actualizarRange=true){
+  const texto='Página '+n+' de '+libroActual.totalPages;
+  const pct=libroActual.totalPages?Math.round(n/libroActual.totalPages*100):0;
+  document.getElementById('readerPosition').textContent=texto;
+  document.getElementById('pageBig').textContent=texto;
+  document.getElementById('pagePct').textContent=pct+'% leído';
+  if(actualizarRange){
+    const rg=/** @type {HTMLInputElement} */(document.getElementById('pageRange'));
+    rg.max=String(libroActual.totalPages);rg.value=String(n);
+  }
+}
+async function obtenerOff(n,segundoPlano=false,ligera=false,promover=true,calidad=1){
+  revisarCache();
+  const requerida=ligera?Math.min(1,densidadBase()):densidadBase();
+  const existente=cache.get(n);
+  if(existente&&(existente._density||densidadBase())>=requerida-.01&&
+    (existente._quality||1)>=calidad-.01)return existente;
+  const clave=cacheKey+'#'+n+'@'+requerida.toFixed(2)+'x'+calidad.toFixed(2);
+  if(pending.has(clave))return pending.get(clave);
+  const k=cacheKey;
+  const tarea=pintarOff(n,calidad,null,segundoPlano,requerida,promover).then(off=>{
+    if(k===cacheKey&&n>=libroActual.page-1&&n<=libroActual.page+3){
+      const anterior=cache.get(n);
+      if(!anterior||anterior.width*anterior.height<off.width*off.height){
+        cache.set(n,off);if(anterior)soltar(anterior);podar(libroActual.page);return off;
+      }
+      soltar(off);return anterior;
+    }
+    soltar(off);return null;
+  }).finally(()=>pending.delete(clave));
+  pending.set(clave,tarea);
+  return tarea;
+}
+async function precargarAlrededor(n){
+  const tok=++preloadTok;
+  for(const p of [n+1,n+2,n+3]){
+    if(tok!==preloadTok)return;
+    if(p<1||p>libroActual.totalPages)continue;
+    const calidad=p===n+1?Math.max(1,libroActual.zoom):1;
+    try{await obtenerOff(p,p!==n+1,false,true,calidad);}catch(e){}
+  }
+}
+
+async function render(n){
+  if(!pdfDoc)return;
+  revisarCache();
+  const tok=++renderTok;
+  preloadTok++;cancelarPost();textTok++;textLayer.replaceChildren();
+  const calidadNecesaria=Math.max(1,libroActual.zoom);
+  let off=cache.get(n);
+  if(off&&(off._quality||1)<calidadNecesaria-.01)off=null;
+  if(!off){
+    spin.classList.add('on');
+    try{off=await obtenerOff(n,false,false,true,calidadNecesaria);}
+    catch(e){if(tok===renderTok){spin.classList.remove('on');toast('No se pudo mostrar esta página.');}return;}
+  }
+  if(tok!==renderTok||!off)return;
+  spin.classList.remove('on');volcar(off);
+  podar(n);
+  actualizarPosicion(n);
+  precargarAlrededor(n);
+  programarPost(n);
+}
+
+/** @param {number} n */
+function irA(n){
+  n=Math.max(1,Math.min(libroActual.totalPages,n));
+  if(n===libroActual.page)return;
+  libroActual.page=n;
+  const e=today(); const eb=entradaDeLibro(e,libroActual.id,n); if(n>eb.maxPage)eb.maxPage=n;
+  libroActual.scrollTop=0; wrap.scrollTop=0;
+  render(n); pintarLector(); save();
+}
+function pintarLector(){
+  const e=today();
+  document.getElementById('readerTitle').textContent=libroActual.name||'Libro';
+  actualizarPosicion(libroActual.page);
+  document.getElementById('readToday').textContent='Hoy: '+paginasDe(e)+' pág';
+  document.getElementById('readGoal').textContent='Meta: '+S.goal;
+}
+
+let marca=0, segTimer=null;
+function volcarSeg(){
+  if(!marca)return;
+  const ahora=Date.now();
+  if(document.visibilityState==='visible'){
+    today().seconds+=Math.round((ahora-marca)/1000); save();}
+  marca=ahora;
+}
+
+function abrirLector(){
+  document.getElementById('reader').classList.add('on');
+  const e=today(); const eb=entradaDeLibro(e,libroActual.id,libroActual.page);
+  if(libroActual.page>eb.maxPage)eb.maxPage=libroActual.page;
+  cacheKey=''; render(libroActual.page); pintarLector();
+  requestAnimationFrame(()=>{wrap.scrollTop=libroActual.scrollTop||0;});
+  chrome(true); autoHideT=setTimeout(()=>chrome(false),2600);
+  marca=Date.now(); clearInterval(segTimer); segTimer=setInterval(volcarSeg,5000);
+  statusBar(true);
+}
+function cerrarLector(){
+  volcarSeg(); clearInterval(segTimer); segTimer=null; marca=0;
+  cancelarPost();textTok++;textLayer.replaceChildren();
+  libroActual.scrollTop=wrap.scrollTop;
+  cache.forEach(soltar); cache.clear(); cacheKey='';
+  document.getElementById('reader').classList.remove('on');
+  saveNow(); pintarHome(); show('scHome');
+  statusBar(false);
+}
+function chrome(on){
+  document.getElementById('topBar').classList.toggle('show',on);
+  document.getElementById('botBar').classList.toggle('show',on);
+  document.getElementById('reader').classList.toggle('menu-open',on);
+}
+function statusBar(hide){
+  const SB=window.Capacitor&&window.Capacitor.Plugins&&window.Capacitor.Plugins.StatusBar;
+  if(!SB)return;
+  (hide?SB.hide():SB.show()).catch(()=>{});
+}
+
+/* gestos */
+let tX=0,tY=0,moved=false,autoHideT=null;
+let pinching=false,ignorarToque=false,pinchStartDist=0,pinchStartZoom=1,pinchZoom=1;
+let pinchAnchorX=.5,pinchAnchorY=.5,pinchLastX=0,pinchLastY=0;
+const MIN_ZOOM=.6,MAX_ZOOM=3;
+function distancia(t0,t1){return Math.hypot(t1.clientX-t0.clientX,t1.clientY-t0.clientY);}
+function centroToques(t0,t1){return{x:(t0.clientX+t1.clientX)/2,y:(t0.clientY+t1.clientY)/2};}
+function haySeleccion(){const s=window.getSelection&&window.getSelection();return !!(s&&!s.isCollapsed&&s.toString().trim());}
+function colocarAncla(cx,cy){
+  const r=wrap.getBoundingClientRect(),vx=cx-r.left,vy=cy-r.top;
+  wrap.scrollLeft=Math.max(0,pinchAnchorX*stage.scrollWidth-vx);
+  wrap.scrollTop=Math.max(0,pinchAnchorY*stage.scrollHeight-vy);
+}
+function cambiarZoom(nuevo){
+  nuevo=Math.round(Math.max(MIN_ZOOM,Math.min(MAX_ZOOM,nuevo))*20)/20;
+  if(Math.abs(nuevo-libroActual.zoom)<.01)return;
+  pinchAnchorX=(wrap.scrollLeft+wrap.clientWidth/2)/Math.max(1,stage.scrollWidth);
+  pinchAnchorY=(wrap.scrollTop+wrap.clientHeight/2)/Math.max(1,stage.scrollHeight);
+  libroActual.zoom=nuevo;
+  aplicarZoom();
+  colocarAncla(wrap.getBoundingClientRect().left+wrap.clientWidth/2,
+    wrap.getBoundingClientRect().top+wrap.clientHeight/2);
+  libroActual.scrollTop=wrap.scrollTop;save();precargarAlrededor(libroActual.page);programarPost(libroActual.page);
+}
+
+wrap.addEventListener('touchstart',ev=>{
+  interactuando=true;clearTimeout(autoHideT);cancelarPost();
+  if(ev.touches.length===2){
+    pinching=true;
+    ignorarToque=true;
+    pinchStartDist=Math.max(1,distancia(ev.touches[0],ev.touches[1]));
+    pinchStartZoom=libroActual.zoom; pinchZoom=libroActual.zoom;
+    const c=centroToques(ev.touches[0],ev.touches[1]),r=wrap.getBoundingClientRect();
+    pinchLastX=c.x;pinchLastY=c.y;
+    pinchAnchorX=(wrap.scrollLeft+c.x-r.left)/Math.max(1,stage.scrollWidth);
+    pinchAnchorY=(wrap.scrollTop+c.y-r.top)/Math.max(1,stage.scrollHeight);
+  }else if(ev.touches.length===1){
+    tX=ev.touches[0].clientX;tY=ev.touches[0].clientY;moved=false;
+  }
+},{passive:true});
+wrap.addEventListener('touchmove',ev=>{
+  if(pinching&&ev.touches.length===2){
+    ev.preventDefault();
+    const d=distancia(ev.touches[0],ev.touches[1]);
+    pinchZoom=Math.max(MIN_ZOOM,Math.min(MAX_ZOOM,pinchStartZoom*(d/pinchStartDist)));
+    aplicarTamanoZoom(pinchZoom);
+    const c=centroToques(ev.touches[0],ev.touches[1]);
+    pinchLastX=c.x;pinchLastY=c.y;
+    colocarAncla(c.x,c.y);
+    return;
+  }
+  if(ev.touches.length===1&&(Math.abs(ev.touches[0].clientX-tX)>18||Math.abs(ev.touches[0].clientY-tY)>18))moved=true;
+},{passive:false});
+wrap.addEventListener('touchend',ev=>{
+  if(ev.touches.length===0)interactuando=false;
+  if(pinching){
+    if(ev.touches.length<2){
+      pinching=false;
+      const nuevo=Math.round(pinchZoom*20)/20;
+      if(Math.abs(nuevo-libroActual.zoom)>.02)libroActual.zoom=nuevo;
+      aplicarZoom();colocarAncla(pinchLastX,pinchLastY);
+      libroActual.scrollTop=wrap.scrollTop;save();precargarAlrededor(libroActual.page);programarPost(libroActual.page);
+      if(ev.touches.length===1){
+        tX=ev.touches[0].clientX;tY=ev.touches[0].clientY;moved=true;
+      }else ignorarToque=false;
+    }
+    return;
+  }
+  if(ev.touches.length>0)return;
+  if(ignorarToque){ignorarToque=false;programarPost(libroActual.page);return;}
+  if(haySeleccion())return;
+  const dx=ev.changedTouches[0].clientX-tX, dy=ev.changedTouches[0].clientY-tY;
+  if(Math.abs(dx)>60&&Math.abs(dx)>Math.abs(dy)*1.5){irA(libroActual.page+(dx<0?1:-1));chrome(false);return;}
+  if(moved){programarPost(libroActual.page);return;}
+  const x=ev.changedTouches[0].clientX/window.innerWidth;
+  if(x<.3){irA(libroActual.page-1);return;}
+  if(x>.7){irA(libroActual.page+1);return;}
+  chrome(!document.getElementById('topBar').classList.contains('show'));
+  programarPost(libroActual.page);
+});
+wrap.addEventListener('touchcancel',()=>{
+  interactuando=false;
+  if(!pinching){programarPost(libroActual.page);return;}
+  pinching=false;ignorarToque=false;
+  aplicarZoom();programarPost(libroActual.page);
+},{passive:true});
+wrap.addEventListener('click',ev=>{
+  if('ontouchstart' in window||haySeleccion())return;
+  const x=ev.clientX/window.innerWidth;
+  if(x<.3)irA(libroActual.page-1); else if(x>.7)irA(libroActual.page+1);
+  else chrome(!document.getElementById('topBar').classList.contains('show'));
+});
+let scT=null;
+wrap.addEventListener('scroll',()=>{clearTimeout(scT);
+  scT=setTimeout(()=>{libroActual.scrollTop=wrap.scrollTop;save();},180);},{passive:true});
+document.addEventListener('keydown',ev=>{
+  if(!document.getElementById('reader').classList.contains('on'))return;
+  if(ev.key==='ArrowRight'||ev.key===' ')irA(libroActual.page+1);
+  if(ev.key==='ArrowLeft')irA(libroActual.page-1);
+  if(ev.key==='Escape')cerrarLector();
+});
+
+let rzT=null;
+window.addEventListener('resize',()=>{
+  if(!document.getElementById('reader').classList.contains('on'))return;
+  clearTimeout(rzT); rzT=setTimeout(()=>{revisarCache();render(libroActual.page);},260);});
+
+document.getElementById('closeRead').onclick=cerrarLector;
+document.getElementById('zoomIn').onclick=()=>cambiarZoom(libroActual.zoom+.25);
+document.getElementById('zoomOut').onclick=()=>cambiarZoom(libroActual.zoom-.25);
+document.getElementById('pageRange').oninput=ev=>{
+  actualizarPosicion(parseInt(/** @type {HTMLInputElement} */(ev.target).value,10),false);};
+document.getElementById('pageRange').onchange=ev=>irA(parseInt(/** @type {HTMLInputElement} */(ev.target).value,10));
+
+/* ---------- carga de archivo ---------- */
+/**
+ * @param {File} file
+ * @param {boolean} [reset]
+ */
+async function guardarLibro(file,reset){
+  if(!file)return;
+  if(file.type&&file.type.indexOf('pdf')===-1){toast('Ese archivo no es un PDF.');return;}
+  toast('Guardando el libro…');
+  try{
+    const id=(S.currentBookId&&S.books[S.currentBookId])?S.currentBookId:idLibro();
+    await kvSet('book:'+id,{name:file.name,blob:file});
+    const libro=S.books[id]||(S.books[id]={id,name:'',page:1,scrollTop:0,zoom:1,totalPages:0,
+      addedAt:dayKey(),lastOpenedAt:dayKey()});
+    libro.name=file.name.replace(/\.pdf$/i,'');
+    if(reset){libro.page=1;libro.scrollTop=0;libro.zoom=1;}
+    S.currentBookId=id;
+    cache.forEach(soltar);cache.clear();cacheKey='';
+    const ok=await abrirLibro(id);
+    if(!ok){toast('No se pudo leer el PDF.');return;}
+    await saveNow();
+    pintarHome();show('scHome');
+    toast('Listo: '+libro.totalPages+' páginas.');
+  }catch(err){toast('No se pudo guardar. Puede que no haya espacio en el teléfono.');}
+}
+document.getElementById('fileIn').onchange=ev=>guardarLibro(/** @type {HTMLInputElement} */(ev.target).files[0],true);
+document.getElementById('replaceIn').onchange=ev=>guardarLibro(/** @type {HTMLInputElement} */(ev.target).files[0],true);
+
+/* ---------- ajustes ---------- */
+document.getElementById('goalIn').onchange=ev=>{
+  const t=/** @type {HTMLInputElement} */(ev.target);
+  S.goal=Math.max(1,Math.min(200,parseInt(t.value,10)||10));t.value=String(S.goal);save();};
+document.getElementById('hourIn').onchange=ev=>{
+  const t=/** @type {HTMLInputElement} */(ev.target);
+  S.reminderHour=Math.max(0,Math.min(23,parseInt(t.value,10)||21));t.value=String(S.reminderHour);save();
+  programarRecordatorio();};
+
+document.getElementById('exportBtn').onclick=()=>{
+  const blob=new Blob([JSON.stringify(S,null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='ascua-progreso-'+dayKey()+'.json';a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+  toast('Guarda ese archivo en Drive o en tu correo.');
+};
+document.getElementById('importIn').onchange=ev=>{
+  const f=/** @type {HTMLInputElement} */(ev.target).files[0];if(!f)return;
+  const r=new FileReader();
+  r.onload=async()=>{
+    try{
+      const d=JSON.parse(String(r.result));
+      if(!d||typeof d!=='object'||!d.history)throw 0;
+      const migrado=(d.schemaVersion>=2)?d:await migrarAMultiLibro(d);
+      const librosPrevios=S.books,idPrevio=S.currentBookId;
+      S=Object.assign(fresh(),migrado);
+      if(!S.books||!Object.keys(S.books).length){S.books=librosPrevios;S.currentBookId=idPrevio;}
+      await saveNow();pintarHome();pintarSet();toast('Progreso restaurado.');
+    }catch(e){toast('Ese archivo no sirve. Debe ser el que exportó Ascua.');}
+  };
+  r.readAsText(f);
+};
+
+document.getElementById('tabHome').onclick=()=>{pintarHome();show('scHome');};
+document.getElementById('tabSet').onclick=()=>{pintarSet();show('scSet');};
+document.getElementById('goRead').onclick=async()=>{
+  if(!S.currentBookId){toast('Carga un PDF primero.');return;}
+  if(!pdfDoc||!libroActual){const ok=await abrirLibro(S.currentBookId);if(!ok){toast('Carga un PDF primero.');return;}}
+  abrirLector();
+};
+
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='hidden'){volcarSeg();saveNow();}
+  else if(segTimer){marca=Date.now();}});
+window.addEventListener('pagehide',()=>{
+  if(segTimer){volcarSeg();libroActual.scrollTop=wrap.scrollTop;}saveNow();});
+
+/* ---------- arranque ---------- */
+(async function(){
+  await loadState();
+  await programarRecordatorio();
+
+  const AppPlugin=window.Capacitor&&window.Capacitor.Plugins&&window.Capacitor.Plugins.App;
+  if(AppPlugin){
+    AppPlugin.addListener('backButton',()=>{
+      if(document.getElementById('reader').classList.contains('on')){cerrarLector();return;}
+      if(!document.getElementById('scHome').classList.contains('on')){pintarHome();show('scHome');return;}
+      AppPlugin.minimizeApp();
+    });
+  }
+  if(navigator.storage&&navigator.storage.persist){
+    try{
+      const ya=await navigator.storage.persisted();
+      const ok=ya||await navigator.storage.persist();
+      document.getElementById('persistState').textContent = ok
+        ? 'Protegido. Android no borrará tu libro para liberar espacio.'
+        : 'Sin protección. Instala la app en tu pantalla de inicio y exporta tu progreso de vez en cuando.';
+    }catch(e){document.getElementById('persistState').textContent='No se pudo comprobar.';}
+  }else{document.getElementById('persistState').textContent='Tu navegador no permite comprobarlo.';}
+
+  if(Object.keys(S.books).length){
+    try{await abrirLibro(S.currentBookId||Object.keys(S.books)[0]);}catch(e){}
+    pintarHome();pintarSet();show('scHome');
+  }else{show('scOnboard');}
+
+  if('serviceWorker' in navigator){
+    navigator.serviceWorker.register('sw.js').catch(()=>{});
+  }
+})();
