@@ -24,6 +24,8 @@
     const normalized=Object.assign({},book||{});
     normalized.cover=COVERS.includes(normalized.cover)?normalized.cover:coverFor(seed||normalized.id||normalized.name);
     normalized.checks=normalizeChecks(normalized.checks,normalized.totalPages);
+    const max=Number(normalized.totalPages)||Number.MAX_SAFE_INTEGER;
+    normalized.coverPage=Math.max(1,Math.min(max,Math.floor(Number(normalized.coverPage)||1)));
     return normalized;
   }
 

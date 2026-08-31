@@ -17,8 +17,8 @@ con días de gracia. Funciona sin conexión y no manda datos a ningún servidor.
 - **Sin backend.** El PDF y el progreso viven en IndexedDB, en el propio teléfono.
   El PDF se carga como `blob:` URL para que pdf.js lo lea por partes en vez de
   volcarlo entero en memoria.
-- **Portadas sin imágenes.** Cada libro guarda solo el identificador de uno de
-  seis diseños CSS; no se duplican archivos ni miniaturas del PDF.
+- **Portadas ligeras.** La primera página se usa por defecto y puede cambiarse
+  por cualquier página del PDF. Solo se guarda una miniatura WebP pequeña por libro.
 - **Renderizado.** Cada página se dibuja en un canvas fuera de pantalla y se
   copia al visible. La caché se limita a 6 millones de píxeles y se precargan
   hasta las dos páginas siguientes en tiempo muerto con `requestIdleCallback`.

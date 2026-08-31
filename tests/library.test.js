@@ -15,6 +15,12 @@ test('cada libro antiguo recibe portada ligera y lista de páginas',()=>{
   const book=library.normalizeBook({id:'uno',name:'Libro'},'uno');
   assert.ok(library.COVERS.includes(book.cover));
   assert.deepEqual([...book.checks],[]);
+  assert.equal(book.coverPage,1);
+});
+
+test('limita la página de portada al tamaño del libro',()=>{
+  assert.equal(library.normalizeBook({coverPage:500,totalPages:120},'uno').coverPage,120);
+  assert.equal(library.normalizeBook({coverPage:-4,totalPages:120},'uno').coverPage,1);
 });
 
 test('marcar y desmarcar una página conserva las demás',()=>{

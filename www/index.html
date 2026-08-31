@@ -94,6 +94,8 @@ nav svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.6}
 .book-cover[data-cover="ciruela"]{--cover-a:#a35b78;--cover-b:#452442}
 .book-cover[data-cover="arena"]{--cover-a:#c39b65;--cover-b:#73522e}
 .book-cover[data-cover="noche"]{--cover-a:#55547c;--cover-b:#1e213c}
+.book-cover img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:2;background:#fff}
+.book-cover.has-image::before,.book-cover.has-image::after,.book-cover.has-image .cover-label{display:none}
 .cover-label{font-family:var(--serif);font-size:11px;line-height:1;letter-spacing:.05em;text-transform:uppercase;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-shadow:0 1px 3px rgba(0,0,0,.5)}
 input[type=number],select{background:var(--surface-high);border:1px solid var(--outline-var);color:var(--on-surface);
@@ -119,11 +121,13 @@ input[type=number],select{background:var(--surface-high);border:1px solid var(--
 .sheet-title{font-family:var(--serif);font-size:25px;font-weight:400;margin:8px 0 4px}
 .sheet-copy{font-size:13px;line-height:1.55;color:var(--on-surface-var);margin:0 0 18px}
 .sheet-back{border:0;background:none;color:var(--primary);font:inherit;font-size:13px;padding:8px 0;cursor:pointer}
-.cover-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:18px}
-.cover-choice{border:1px solid var(--outline-var);background:var(--surface-high);padding:12px 8px;color:var(--on-surface-var);cursor:pointer}
-.cover-choice .book-cover{margin:0 auto 9px;width:58px;height:80px}
-.cover-choice span:last-child{font-size:11px}
-.cover-choice.selected{border:2px solid var(--primary);color:var(--primary);padding:11px 7px}
+.cover-picker{display:grid;grid-template-columns:120px minmax(0,1fr);align-items:center;gap:18px;margin:18px 0 22px}
+.cover-page-preview{width:120px;height:166px;padding:10px;margin:auto;box-shadow:0 10px 28px rgba(0,0,0,.35)}
+.cover-picker-controls{display:flex;flex-direction:column;gap:10px;min-width:0}
+.cover-picker-controls label{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--on-surface-var)}
+.cover-picker-controls input{width:100%;text-align:left}
+.cover-picker-controls .btn{padding:12px 8px;margin:0}
+.cover-preview-status{font-size:11px;line-height:1.45;color:var(--on-surface-var);margin:0;min-height:32px}
 .marks-list{display:flex;flex-direction:column;margin-top:10px}
 .mark-row{display:grid;grid-template-columns:1fr 42px;align-items:center;border-bottom:1px solid var(--outline-var)}
 .mark-open{border:0;background:none;color:var(--on-surface);font:inherit;text-align:left;padding:16px 4px;cursor:pointer}
@@ -315,14 +319,23 @@ input[type=range]{width:100%;accent-color:var(--primary-c);background:transparen
     <div id="bookActionsView">
       <button class="sheet-action" data-book-action="read"><span class="action-icon">&#9655;</span><span>Leer libro</span><small>Continuar</small></button>
       <button class="sheet-action" data-book-action="marks"><span class="action-icon">&#10003;</span><span>Páginas guardadas</span><small id="bookMarksCount">0</small></button>
-      <button class="sheet-action" data-book-action="cover"><span class="action-icon">&#9638;</span><span>Elegir portada</span><small>6 estilos</small></button>
+      <button class="sheet-action" data-book-action="cover"><span class="action-icon">&#9638;</span><span>Elegir portada</span><small id="bookCoverPage">Página 1</small></button>
       <button class="sheet-action danger" data-book-action="delete"><span class="action-icon">&#215;</span><span>Eliminar libro</span><small>PDF y datos</small></button>
     </div>
     <div id="bookCoverView" class="hidden">
       <button class="sheet-back" data-book-action="back">&#8592; Volver</button>
       <h3 class="sheet-title">Elige una portada</h3>
-      <p class="sheet-copy">Son diseños de la app: no añaden imágenes ni aumentan el espacio usado.</p>
-      <div class="cover-grid" id="coverGrid"></div>
+      <p class="sheet-copy">La primera página se usa por defecto. Puedes escoger cualquier página del PDF.</p>
+      <div class="cover-picker">
+        <div class="book-cover cover-page-preview" id="coverPagePreview"><span class="cover-label" id="coverPagePreviewLabel"></span></div>
+        <div class="cover-picker-controls">
+          <label for="coverPageIn">Número de página</label>
+          <input type="number" id="coverPageIn" min="1" step="1" inputmode="numeric">
+          <button class="btn ghost" data-book-action="cover-preview">Ver vista previa</button>
+          <p class="cover-preview-status" id="coverPreviewStatus">—</p>
+        </div>
+      </div>
+      <button class="btn solid" id="coverSave" data-book-action="cover-save">Usar como portada</button>
     </div>
     <div id="bookMarksView" class="hidden">
       <button class="sheet-back" data-book-action="back">&#8592; Volver</button>

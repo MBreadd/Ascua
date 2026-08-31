@@ -11,6 +11,7 @@
  * @property {string} addedAt
  * @property {string} lastOpenedAt
  * @property {string} cover
+ * @property {number} coverPage
  * @property {number[]} checks
  */
 /**
@@ -73,7 +74,7 @@ let pdfDoc=null, blobUrl=null, saveT=null;
 let libroActual=null;
 
 /** @returns {Estado} */
-function fresh(){return{schemaVersion:4,books:{},currentBookId:null,goal:10,
+function fresh(){return{schemaVersion:5,books:{},currentBookId:null,goal:10,
   reminderHour:21,history:{},startedAt:dayKey()};}
 
 function idLibro(){return 'b'+Date.now().toString(36)+Math.random().toString(36).slice(2,7);}
@@ -122,7 +123,7 @@ async function migrarAMultiLibro(raw){
     nuevo.history=out;
   }
   for(const id in nuevo.books)nuevo.books[id]=LIBRARY.normalizeBook(nuevo.books[id],id);
-  nuevo.schemaVersion=4;
+  nuevo.schemaVersion=5;
   return nuevo;
 }
 
@@ -140,14 +141,15 @@ async function loadState(){
     for(const id in S.books){
       const anterior=S.books[id],normalizado=LIBRARY.normalizeBook(anterior,id);
       const checksAntes=Array.isArray(anterior.checks)?anterior.checks:[];
-      if(anterior.cover!==normalizado.cover||checksAntes.join(',')!==normalizado.checks.join(','))cambio=true;
+      if(anterior.cover!==normalizado.cover||anterior.coverPage!==normalizado.coverPage||
+        checksAntes.join(',')!==normalizado.checks.join(','))cambio=true;
       S.books[id]=normalizado;
     }
     for(const k in S.history){
       const e=S.history[k];
       if(e&&e.goal==null){e.goal=S.goal;cambio=true;}
     }
-    if(S.schemaVersion<4){S.schemaVersion=4;cambio=true;}
+    if(S.schemaVersion<5){S.schemaVersion=5;cambio=true;}
   }
   if(cambio)await kvSet('state',S).catch(()=>{});
 }
@@ -348,6 +350,101 @@ function cerrarCalendario(){
   document.body.classList.remove('modal-open');document.getElementById('streakOpen').focus();
 }
 
+/* ---------- portadas de páginas PDF ---------- */
+/** @type {Map<string,{page:number,url:string}>} */
+const coverUrls=new Map();
+/** @type {Map<string,Promise<{page:number,url:string}>>} */
+const coverPending=new Map();
+
+/** @param {HTMLCanvasElement} source */
+function canvasABlob(source){return new Promise((resolve,reject)=>{
+  source.toBlob(blob=>blob?resolve(blob):reject(new Error('No se pudo comprimir la portada.')),'image/webp',.68);
+});}
+
+/** @param {string} bookId */
+function liberarPortada(bookId){
+  const previa=coverUrls.get(bookId);if(!previa)return;
+  URL.revokeObjectURL(previa.url);coverUrls.delete(bookId);
+}
+
+/** @param {string} bookId @param {number} page @param {Blob} blob */
+function cachearPortada(bookId,page,blob){
+  liberarPortada(bookId);
+  const dato={page,url:URL.createObjectURL(blob)};coverUrls.set(bookId,dato);return dato;
+}
+
+/** @param {string} bookId @param {number} page */
+async function renderizarMiniatura(bookId,page){
+  const libro=S.books[bookId];if(!libro)throw new Error('Libro no encontrado.');
+  page=Math.max(1,Math.min(libro.totalPages||1,Math.floor(page)||1));
+  let doc=null,urlTemporal=null,propio=false,pagina=null;
+  try{
+    if(pdfDoc&&libroActual&&libroActual.id===bookId)doc=pdfDoc;
+    else{
+      const rec=await kvGet('book:'+bookId);if(!rec||!rec.blob)throw new Error('PDF no encontrado.');
+      urlTemporal=URL.createObjectURL(rec.blob);doc=await PDFJS.getDocument({url:urlTemporal}).promise;propio=true;
+    }
+    pagina=await doc.getPage(page);
+    const base=pagina.getViewport({scale:1}),scale=Math.min(180/base.width,240/base.height);
+    const viewport=pagina.getViewport({scale}),canvasMini=document.createElement('canvas');
+    canvasMini.width=Math.max(1,Math.round(viewport.width));canvasMini.height=Math.max(1,Math.round(viewport.height));
+    const ctx=canvasMini.getContext('2d',{alpha:false});if(!ctx)throw new Error('Canvas no disponible.');
+    ctx.fillStyle='#fff';ctx.fillRect(0,0,canvasMini.width,canvasMini.height);
+    await pagina.render({canvasContext:ctx,viewport}).promise;
+    const blob=await canvasABlob(canvasMini);canvasMini.width=0;canvasMini.height=0;return blob;
+  }finally{
+    if(pagina)pagina.cleanup();
+    if(propio&&doc)try{await doc.destroy();}catch(e){}
+    if(urlTemporal)URL.revokeObjectURL(urlTemporal);
+  }
+}
+
+/** @param {Libro} libro */
+async function cargarPortada(libro){
+  const cache=coverUrls.get(libro.id);if(cache&&cache.page===libro.coverPage)return cache;
+  const rec=await kvGet('cover:'+libro.id);
+  if(!rec||rec.page!==libro.coverPage||!rec.blob)return null;
+  return cachearPortada(libro.id,rec.page,rec.blob);
+}
+
+/** @param {Libro} libro */
+function asegurarPortada(libro){
+  const pendiente=coverPending.get(libro.id);if(pendiente)return pendiente;
+  const page=libro.coverPage;
+  const tarea=(async()=>{
+    const guardada=await cargarPortada(libro);if(guardada)return guardada;
+    const blob=await renderizarMiniatura(libro.id,page);
+    if(!S.books[libro.id]||S.books[libro.id].coverPage!==page)throw new Error('La portada cambió durante el renderizado.');
+    await kvSet('cover:'+libro.id,{page,blob});
+    return cachearPortada(libro.id,page,blob);
+  })().finally(()=>coverPending.delete(libro.id));
+  coverPending.set(libro.id,tarea);return tarea;
+}
+
+async function completarPortadasPendientes(){
+  let cambio=false;
+  for(const libro of Object.values(S.books)){
+    try{
+      if(await cargarPortada(libro))continue;
+      await asegurarPortada(libro);cambio=true;
+    }catch(e){console.warn('No se pudo crear la portada de '+libro.name+'.',e);}
+  }
+  if(cambio&&document.getElementById('scHome').classList.contains('on'))pintarBiblioteca();
+}
+
+/** @param {HTMLElement} elemento @param {Libro} libro */
+async function aplicarPortada(elemento,libro){
+  if(elemento.dataset.bookId&&elemento.dataset.bookId!==libro.id){
+    elemento.classList.remove('has-image');const anterior=elemento.querySelector('img');if(anterior)anterior.remove();
+  }
+  elemento.dataset.bookId=libro.id;elemento.dataset.cover=libro.cover;
+  let dato;try{dato=await cargarPortada(libro);}catch(e){return;}
+  if(!dato||elemento.dataset.bookId!==libro.id)return;
+  let img=elemento.querySelector('img');
+  if(!img){img=document.createElement('img');img.alt='';img.setAttribute('aria-hidden','true');elemento.appendChild(img);}
+  img.src=dato.url;elemento.classList.add('has-image');
+}
+
 /** @param {string} name */
 function etiquetaPortada(name){
   const partes=String(name||'Libro').trim().split(/\s+/).filter(Boolean);
@@ -360,6 +457,7 @@ function crearPortada(libro){
   portada.dataset.cover=libro.cover;
   const etiqueta=document.createElement('span');etiqueta.className='cover-label';
   etiqueta.textContent=etiquetaPortada(libro.name);portada.appendChild(etiqueta);
+  aplicarPortada(portada,libro);
   return portada;
 }
 
@@ -388,40 +486,81 @@ function pintarBiblioteca(){
   }
 }
 
-let menuBookId=null;
-const COVER_NAMES={ascua:'Ascua',bosque:'Bosque',oceano:'Océano',ciruela:'Ciruela',arena:'Arena',noche:'Noche'};
+let menuBookId=null,previewTok=0;
+/** @type {{bookId:string,page:number,blob:Blob,url:string}|null} */
+let coverPreview=null;
+
+function liberarPreviewPortada(){
+  previewTok++;
+  if(coverPreview)URL.revokeObjectURL(coverPreview.url);
+  coverPreview=null;
+}
 
 /** @param {'actions'|'cover'|'marks'} vista */
 function mostrarVistaLibro(vista){
   document.getElementById('bookActionsView').classList.toggle('hidden',vista!=='actions');
   document.getElementById('bookCoverView').classList.toggle('hidden',vista!=='cover');
   document.getElementById('bookMarksView').classList.toggle('hidden',vista!=='marks');
-  if(vista==='cover')pintarPortadas();
+  if(vista==='cover')pintarSelectorPortada();else liberarPreviewPortada();
   if(vista==='marks')pintarMarcas();
 }
 
 function actualizarCabeceraLibro(){
   const libro=menuBookId&&S.books[menuBookId];if(!libro)return;
   document.getElementById('bookMenuTitle').textContent=libro.name;
-  document.getElementById('bookMenuCover').dataset.cover=libro.cover;
+  const portada=document.getElementById('bookMenuCover');portada.dataset.cover=libro.cover;
   document.getElementById('bookMenuCoverLabel').textContent=etiquetaPortada(libro.name);
+  aplicarPortada(portada,libro);
   const n=libro.checks.length;
   document.getElementById('bookMarksCount').textContent=String(n);
+  document.getElementById('bookCoverPage').textContent='Página '+libro.coverPage;
 }
 
-function pintarPortadas(){
-  const libro=menuBookId&&S.books[menuBookId],grid=document.getElementById('coverGrid');
-  grid.replaceChildren();if(!libro)return;
-  for(const cover of LIBRARY.COVERS){
-    const btn=document.createElement('button');btn.className='cover-choice';
-    if(cover===libro.cover)btn.classList.add('selected');
-    btn.dataset.bookCover=cover;btn.setAttribute('aria-label','Portada '+COVER_NAMES[cover]);
-    const muestra=document.createElement('span');muestra.className='book-cover';muestra.dataset.cover=cover;
-    const inicial=document.createElement('span');inicial.className='cover-label';
-    inicial.textContent=etiquetaPortada(libro.name);muestra.appendChild(inicial);
-    const nombre=document.createElement('span');nombre.textContent=COVER_NAMES[cover];
-    btn.appendChild(muestra);btn.appendChild(nombre);grid.appendChild(btn);
+async function actualizarPreviewPortada(){
+  const libro=menuBookId&&S.books[menuBookId];if(!libro)return false;
+  const input=/** @type {HTMLInputElement} */(document.getElementById('coverPageIn'));
+  const page=Math.max(1,Math.min(libro.totalPages,Math.floor(Number(input.value))||1));input.value=String(page);
+  const status=document.getElementById('coverPreviewStatus'),tok=++previewTok;
+  status.textContent='Generando vista previa…';
+  /** @type {HTMLButtonElement} */(document.getElementById('coverSave')).disabled=true;
+  try{
+    const guardada=await kvGet('cover:'+libro.id);
+    const blob=guardada&&guardada.page===page&&guardada.blob?guardada.blob:await renderizarMiniatura(libro.id,page);
+    if(tok!==previewTok||menuBookId!==libro.id)return false;
+    liberarPreviewPortada();
+    coverPreview={bookId:libro.id,page,blob,url:URL.createObjectURL(blob)};
+    const preview=document.getElementById('coverPagePreview');
+    let img=preview.querySelector('img');if(!img){img=document.createElement('img');img.alt='Vista previa de la portada';preview.appendChild(img);}
+    img.src=coverPreview.url;preview.classList.add('has-image');
+    status.textContent='Página '+page+' · '+Math.max(1,Math.round(blob.size/1024))+' KB aproximados';
+    /** @type {HTMLButtonElement} */(document.getElementById('coverSave')).disabled=false;
+    return true;
+  }catch(e){
+    if(tok===previewTok)status.textContent='No se pudo generar esta página.';
+    return false;
   }
+}
+
+function pintarSelectorPortada(){
+  const libro=menuBookId&&S.books[menuBookId];if(!libro)return;
+  const input=/** @type {HTMLInputElement} */(document.getElementById('coverPageIn'));
+  input.min='1';input.max=String(libro.totalPages);input.value=String(libro.coverPage);
+  const preview=document.getElementById('coverPagePreview');preview.dataset.cover=libro.cover;
+  document.getElementById('coverPagePreviewLabel').textContent=etiquetaPortada(libro.name);
+  actualizarPreviewPortada();
+}
+
+async function guardarPortadaElegida(){
+  const libro=menuBookId&&S.books[menuBookId];if(!libro)return;
+  const page=Math.max(1,Math.min(libro.totalPages,Math.floor(Number(/** @type {HTMLInputElement} */(document.getElementById('coverPageIn')).value))||1));
+  if(!coverPreview||coverPreview.bookId!==libro.id||coverPreview.page!==page){
+    const lista=await actualizarPreviewPortada();if(!lista)return;
+  }
+  if(!coverPreview)return;
+  libro.coverPage=page;
+  await kvSet('cover:'+libro.id,{page,blob:coverPreview.blob});cachearPortada(libro.id,page,coverPreview.blob);
+  await saveNow();pintarBiblioteca();actualizarCabeceraLibro();mostrarVistaLibro('actions');
+  toast('Portada actualizada con la página '+page+'.');
 }
 
 function pintarMarcas(){
@@ -451,6 +590,7 @@ function abrirMenuLibro(id){
 
 function cerrarMenuLibro(){
   const id=menuBookId,modal=document.getElementById('bookModal');
+  liberarPreviewPortada();
   modal.classList.remove('on');modal.setAttribute('aria-hidden','true');document.body.classList.remove('modal-open');
   menuBookId=null;
   const btn=id&&document.querySelector('[data-accion="menu"][data-id="'+id+'"]');
@@ -490,6 +630,7 @@ async function abrirLibro(bookId){
   pdfDoc=await PDFJS.getDocument({url:blobUrl}).promise;
   libro.totalPages=pdfDoc.numPages;
   if(libro.page>libro.totalPages)libro.page=libro.totalPages;
+  libro.coverPage=Math.max(1,Math.min(libro.totalPages,libro.coverPage||1));
   libroActual=libro; S.currentBookId=bookId; libro.lastOpenedAt=dayKey();
   return true;
 }
@@ -900,6 +1041,8 @@ async function agregarLibro(file){
     }
     await saveNow();
     pintarHome();show('scHome');
+    asegurarPortada(S.books[id]).then(()=>pintarBiblioteca())
+      .catch(e=>console.warn('No se pudo crear la portada del libro.',e));
     toast('Listo: '+S.books[id].totalPages+' páginas.');
   }catch(err){
     delete S.books[id]; await kvDel('book:'+id).catch(()=>{});
@@ -928,7 +1071,8 @@ async function eliminarLibro(id){
     S.currentBookId=restantes[0]||null;
   }
   delete S.books[id];
-  await kvDel('book:'+id);
+  liberarPortada(id);
+  await Promise.all([kvDel('book:'+id),kvDel('cover:'+id)]);
   await saveNow();
   pintarHome();
   toast('Libro eliminado.');
@@ -950,12 +1094,7 @@ document.getElementById('bookModal').addEventListener('click',async ev=>{
   const modal=document.getElementById('bookModal');
   if(ev.target===modal){cerrarMenuLibro();return;}
   const target=/** @type {HTMLElement} */(ev.target);
-  const portada=/** @type {HTMLElement} */(target.closest('[data-book-cover]'));
   const libro=menuBookId&&S.books[menuBookId];
-  if(portada&&libro){
-    libro.cover=portada.dataset.bookCover;save();pintarBiblioteca();actualizarCabeceraLibro();pintarPortadas();
-    toast('Portada actualizada.');return;
-  }
   const quitar=/** @type {HTMLElement} */(target.closest('[data-remove-page]'));
   if(quitar&&libro){
     const page=Number(quitar.dataset.removePage);
@@ -972,6 +1111,8 @@ document.getElementById('bookModal').addEventListener('click',async ev=>{
   if(!accion||!libro)return;
   if(accion.dataset.bookAction==='back'){mostrarVistaLibro('actions');return;}
   if(accion.dataset.bookAction==='cover'){mostrarVistaLibro('cover');return;}
+  if(accion.dataset.bookAction==='cover-preview'){await actualizarPreviewPortada();return;}
+  if(accion.dataset.bookAction==='cover-save'){await guardarPortadaElegida();return;}
   if(accion.dataset.bookAction==='marks'){mostrarVistaLibro('marks');return;}
   if(accion.dataset.bookAction==='read'){
     const id=libro.id;cerrarMenuLibro();await leerLibro(id);return;
@@ -1011,7 +1152,7 @@ document.getElementById('importIn').onchange=ev=>{
       if(!S.books||!Object.keys(S.books).length){S.books=librosPrevios;S.currentBookId=idPrevio;}
       for(const id in S.books)S.books[id]=LIBRARY.normalizeBook(S.books[id],id);
       for(const k in S.history)if(S.history[k]&&S.history[k].goal==null)S.history[k].goal=S.goal;
-      S.schemaVersion=4;
+      S.schemaVersion=5;
       await saveNow();pintarHome();pintarSet();toast('Progreso restaurado.');
     }catch(e){toast('Ese archivo no sirve. Debe ser el que exportó Ascua.');}
   };
@@ -1073,6 +1214,8 @@ window.addEventListener('pagehide',()=>{
   if(Object.keys(S.books).length){
     try{await abrirLibro(S.currentBookId||Object.keys(S.books)[0]);}catch(e){}
     pintarHome();pintarSet();show('scHome');
+    if(window.requestIdleCallback)requestIdleCallback(()=>completarPortadasPendientes(),{timeout:1800});
+    else setTimeout(()=>completarPortadasPendientes(),900);
   }else{show('scOnboard');}
 
   const esNativa=!!(window.Capacitor&&window.Capacitor.isNativePlatform&&window.Capacitor.isNativePlatform());
