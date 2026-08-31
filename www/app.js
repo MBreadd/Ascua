@@ -221,16 +221,6 @@ function racha(){
   return analizarRacha().current;
 }
 
-function ritmo(){
-  let tot=0,dias=0,k=dayKey();
-  for(let i=0;i<21;i++){
-    const e=S.history[k];
-    if(e&&paginasDe(e)>0){tot+=paginasDe(e);dias++;}
-    k=addDays(k,-1);
-  }
-  return dias?tot/dias:0;
-}
-
 /* ---------- pantallas ---------- */
 function show(id){
   ['scOnboard','scHome','scSet'].forEach(x=>document.getElementById(x).classList.toggle('on',x===id));
@@ -295,9 +285,12 @@ function pintarHome(){
   const pct=lib&&lib.totalPages?Math.round(lib.page/lib.totalPages*100):0;
   document.getElementById('barFill').style.width=pct+'%';
 
-  const rest=lib?Math.max(0,lib.totalPages-lib.page):0, rt=ritmo()||S.goal;
-  document.getElementById('projection').textContent = !lib ? '—' : (rest===0
-    ? 'Terminaste este libro' : 'A este ritmo terminas el '+fechaLarga(addDays(dayKey(),Math.ceil(rest/rt))));
+  const estimacion=lib?LIBRARY.estimateFinish(lib.totalPages,lib.page,S.goal,dayKey()):null;
+  document.getElementById('projection').textContent = !lib?'—':(!estimacion
+    ? 'Calculando la extensión del libro…'
+    : estimacion.remaining===0?'Terminaste este libro'
+      : 'Te faltan '+estimacion.remaining+' páginas. Con '+estimacion.rate+' al día, terminas el '+
+        fechaLarga(estimacion.finishDate)+' ('+estimacion.days+' '+(estimacion.days===1?'día':'días')+').');
 
   document.getElementById('goRead').textContent = lib&&lib.page>1?'Seguir leyendo':'Empezar a leer';
 

@@ -58,6 +58,7 @@ body::before{content:"";position:fixed;inset:0 0 auto;height:var(--safe-top);bac
 .meta{font-size:16px;color:var(--on-surface-var);margin:0 0 28px}
 .bar{width:100%;height:2px;background:var(--surface-var);position:relative;margin-bottom:12px}
 .bar span{position:absolute;inset:0 auto 0 0;background:var(--primary-c);width:0}
+.projection{font-size:13px;line-height:1.55;color:var(--on-surface-var);margin:0}
 .btn{display:block;width:100%;background:transparent;border:1px solid var(--primary);color:var(--primary);
   padding:16px;font-family:var(--sans);font-size:12px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;cursor:pointer}
 .btn:active{transform:scale(.97)}
@@ -235,7 +236,7 @@ input[type=range]{width:100%;accent-color:var(--primary-c);background:transparen
     <h2 id="bookTitle">—</h2>
     <p class="meta" id="bookPages">—</p>
     <div class="bar"><span id="barFill"></span></div>
-    <p class="label" id="projection">—</p>
+    <p class="projection" id="projection">—</p>
   </div>
   <div class="spacer"></div>
   <button class="btn solid" id="goRead">Seguir leyendo</button>

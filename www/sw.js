@@ -1,4 +1,4 @@
-const CACHE = 'ascua-v17';
+const CACHE = 'ascua-v18';
 
 const LOCAL = [
   './',

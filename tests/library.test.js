@@ -25,3 +25,19 @@ test('marcar y desmarcar una página conserva las demás',()=>{
   assert.equal(removed.added,false);
   assert.deepEqual([...removed.checks],[2,8]);
 });
+
+test('calcula la fecha con páginas restantes divididas entre la meta diaria',()=>{
+  const result=library.estimateFinish(100,40,10,'2026-08-30');
+  assert.deepEqual({...result},{remaining:60,rate:10,days:6,finishDate:'2026-09-05'});
+});
+
+test('redondea hacia arriba cuando queda una fracción de día',()=>{
+  const result=library.estimateFinish(101,40,10,'2026-08-30');
+  assert.equal(result.days,7);
+  assert.equal(result.finishDate,'2026-09-06');
+});
+
+test('un libro terminado necesita cero días adicionales',()=>{
+  const result=library.estimateFinish(80,80,10,'2026-08-30');
+  assert.deepEqual({...result},{remaining:0,rate:10,days:0,finishDate:'2026-08-30'});
+});

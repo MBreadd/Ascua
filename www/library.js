@@ -38,5 +38,28 @@
     return{checks,added:true};
   }
 
-  root.AscuaLibrary=Object.freeze({COVERS,coverFor,normalizeChecks,normalizeBook,toggleCheck});
+  /** @param {string} key @param {number} days */
+  function addDays(key,days){
+    const p=String(key).split('-').map(Number);
+    const date=new Date(Date.UTC(p[0],p[1]-1,p[2]+days));
+    return date.toISOString().slice(0,10);
+  }
+
+  /**
+   * @param {number} totalPages
+   * @param {number} currentPage
+   * @param {number} pagesPerDay
+   * @param {string} today
+   */
+  function estimateFinish(totalPages,currentPage,pagesPerDay,today){
+    const total=Math.max(0,Math.floor(Number(totalPages)||0));
+    if(!total||!/^\d{4}-\d{2}-\d{2}$/.test(today))return null;
+    const current=Math.max(1,Math.min(total,Math.floor(Number(currentPage)||1)));
+    const rate=Math.max(1,Math.floor(Number(pagesPerDay)||1));
+    const remaining=Math.max(0,total-current);
+    const days=remaining?Math.ceil(remaining/rate):0;
+    return{remaining,rate,days,finishDate:addDays(today,days)};
+  }
+
+  root.AscuaLibrary=Object.freeze({COVERS,coverFor,normalizeChecks,normalizeBook,toggleCheck,estimateFinish});
 })(typeof window!=='undefined'?window:globalThis);

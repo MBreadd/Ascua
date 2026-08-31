@@ -9,7 +9,7 @@ con días de gracia. Funciona sin conexión y no manda datos a ningún servidor.
 - Guarda varios libros, páginas para revisar y una portada ligera por libro.
 - Renderiza el PDF tal cual, sin reflujo de texto, página por página.
 - Cuenta páginas y tiempo de lectura por día para calcular la racha.
-- Proyecta la fecha de término según el ritmo real de los últimos 21 días.
+- Proyecta la fecha de término con las páginas restantes y la meta diaria configurada.
 - Exporta e importa el progreso en JSON.
 
 ## Cómo funciona por dentro
