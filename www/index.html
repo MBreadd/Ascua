@@ -9,7 +9,6 @@
 <link rel="apple-touch-icon" href="icon-192.png">
 <style>
 @font-face{font-family:'EB Garamond';font-style:normal;font-weight:400;font-display:swap;src:url('fonts/eb-garamond-400.woff2') format('woff2');}
-@font-face{font-family:'EB Garamond';font-style:normal;font-weight:500;font-display:swap;src:url('fonts/eb-garamond-500.woff2') format('woff2');}
 @font-face{font-family:'Hanken Grotesk';font-style:normal;font-weight:300;font-display:swap;src:url('fonts/hanken-grotesk-300.woff2') format('woff2');}
 @font-face{font-family:'Hanken Grotesk';font-style:normal;font-weight:400;font-display:swap;src:url('fonts/hanken-grotesk-400.woff2') format('woff2');}
 @font-face{font-family:'Hanken Grotesk';font-style:normal;font-weight:500;font-display:swap;src:url('fonts/hanken-grotesk-500.woff2') format('woff2');}
@@ -75,6 +74,27 @@ nav svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.6}
 .row small{display:block;color:var(--on-surface-var);font-size:13px;margin-top:4px;line-height:1.5}
 .row-actions{display:flex;gap:8px;flex:none}
 .btn.sm{width:auto;padding:8px 12px}
+.library-book{display:grid;grid-template-columns:minmax(0,1fr) 46px;align-items:center;border-bottom:1px solid var(--outline-var)}
+.book-open{min-width:0;display:flex;align-items:center;gap:16px;padding:14px 4px 14px 0;border:0;background:none;color:inherit;text-align:left;cursor:pointer}
+.book-open:active .book-cover{transform:scale(.96)}
+.book-info{min-width:0}
+.book-info p{margin:0;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.book-info small{display:block;color:var(--on-surface-var);font-size:12px;margin-top:5px;line-height:1.45}
+.more-btn{width:42px;height:42px;border:0;background:none;color:var(--primary);font-size:25px;line-height:1;cursor:pointer;border-radius:99px}
+.more-btn:active{background:var(--surface-high)}
+.book-cover{--cover-a:#f3a400;--cover-b:#6e2e0b;width:52px;height:72px;flex:none;position:relative;overflow:hidden;
+  display:flex;align-items:flex-end;padding:7px 6px;background:linear-gradient(145deg,var(--cover-a),var(--cover-b));
+  color:#fff9ed;box-shadow:0 5px 12px rgba(0,0,0,.28);border-radius:2px 5px 5px 2px;isolation:isolate}
+.book-cover::before{content:"";position:absolute;inset:0;background:linear-gradient(90deg,rgba(0,0,0,.24),transparent 15%),
+  radial-gradient(circle at 76% 20%,rgba(255,255,255,.28) 0 2px,transparent 3px);z-index:-1}
+.book-cover::after{content:"";position:absolute;width:58px;height:58px;border:1px solid rgba(255,255,255,.28);border-radius:50%;right:-28px;top:12px;z-index:-1}
+.book-cover[data-cover="bosque"]{--cover-a:#5f8c63;--cover-b:#173f31}
+.book-cover[data-cover="oceano"]{--cover-a:#4891a8;--cover-b:#143952}
+.book-cover[data-cover="ciruela"]{--cover-a:#a35b78;--cover-b:#452442}
+.book-cover[data-cover="arena"]{--cover-a:#c39b65;--cover-b:#73522e}
+.book-cover[data-cover="noche"]{--cover-a:#55547c;--cover-b:#1e213c}
+.cover-label{font-family:var(--serif);font-size:11px;line-height:1;letter-spacing:.05em;text-transform:uppercase;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-shadow:0 1px 3px rgba(0,0,0,.5)}
 input[type=number],select{background:var(--surface-high);border:1px solid var(--outline-var);color:var(--on-surface);
   padding:10px 12px;font-family:var(--sans);font-size:15px;width:88px;text-align:center}
 .note{font-size:13px;color:var(--on-surface-var);line-height:1.6;margin:24px 0 0}
@@ -83,6 +103,32 @@ input[type=number],select{background:var(--surface-high);border:1px solid var(--
 .modal.on{display:flex}
 .calendar-panel{width:100%;max-width:600px;max-height:calc(100dvh - var(--safe-top));overflow:auto;
   background:var(--surface);padding:22px 20px 28px;border-top:1px solid var(--outline-var);box-shadow:0 -18px 60px rgba(0,0,0,.35)}
+.book-panel{width:100%;max-width:600px;max-height:calc(100dvh - var(--safe-top));overflow:auto;
+  background:var(--surface);padding:20px 20px calc(24px + var(--safe-bottom));border-top:1px solid var(--outline-var);box-shadow:0 -18px 60px rgba(0,0,0,.35)}
+.book-menu-head{display:grid;grid-template-columns:42px minmax(0,1fr) 42px;align-items:center;gap:14px;margin-bottom:18px}
+.book-menu-head .book-cover{width:42px;height:58px;padding:5px}
+.book-menu-head h2{font-family:var(--serif);font-size:23px;line-height:1.15;font-weight:400;margin:2px 0 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.book-menu-head small{font-size:10px;color:var(--on-surface-var);letter-spacing:.08em;text-transform:uppercase}
+.sheet-action{width:100%;display:grid;grid-template-columns:34px 1fr auto;align-items:center;gap:10px;padding:15px 4px;
+  border:0;border-bottom:1px solid var(--outline-var);background:none;color:var(--on-surface);font:inherit;text-align:left;cursor:pointer}
+.sheet-action:active{background:var(--surface-high)}
+.sheet-action .action-icon{color:var(--primary);font-size:20px;text-align:center}
+.sheet-action small{color:var(--on-surface-var);font-size:12px}
+.sheet-action.danger{color:#ffb4ab}
+.sheet-title{font-family:var(--serif);font-size:25px;font-weight:400;margin:8px 0 4px}
+.sheet-copy{font-size:13px;line-height:1.55;color:var(--on-surface-var);margin:0 0 18px}
+.sheet-back{border:0;background:none;color:var(--primary);font:inherit;font-size:13px;padding:8px 0;cursor:pointer}
+.cover-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:18px}
+.cover-choice{border:1px solid var(--outline-var);background:var(--surface-high);padding:12px 8px;color:var(--on-surface-var);cursor:pointer}
+.cover-choice .book-cover{margin:0 auto 9px;width:58px;height:80px}
+.cover-choice span:last-child{font-size:11px}
+.cover-choice.selected{border:2px solid var(--primary);color:var(--primary);padding:11px 7px}
+.marks-list{display:flex;flex-direction:column;margin-top:10px}
+.mark-row{display:grid;grid-template-columns:1fr 42px;align-items:center;border-bottom:1px solid var(--outline-var)}
+.mark-open{border:0;background:none;color:var(--on-surface);font:inherit;text-align:left;padding:16px 4px;cursor:pointer}
+.mark-open small{display:block;color:var(--on-surface-var);font-size:11px;margin-top:3px}
+.mark-remove{width:42px;height:42px;border:0;background:none;color:#ffb4ab;font-size:18px;cursor:pointer}
+.empty-state{padding:28px 8px;text-align:center;color:var(--on-surface-var);font-size:13px;line-height:1.6}
 .calendar-head{display:grid;grid-template-columns:42px 1fr 42px 42px;align-items:center;gap:6px;margin-bottom:22px}
 .calendar-title{font-family:var(--serif);font-size:25px;font-weight:400;text-align:center;margin:0;color:var(--on-surface);text-transform:capitalize}
 .icon-btn{width:42px;height:42px;border:1px solid var(--outline-var);background:transparent;color:var(--primary);font-size:20px;cursor:pointer}
@@ -129,7 +175,10 @@ input[type=number],select{background:var(--surface-high);border:1px solid var(--
 #topBar.show,#botBar.show{transform:translateY(0)}
 #topBar button{background:none;border:1px solid var(--outline-var);color:var(--primary);font-size:13px;
   font-weight:600;cursor:pointer;padding:8px 10px;font-family:var(--sans);min-width:42px;height:38px}
+#topBar button:active{transform:scale(.95)}
 #closeRead{font-size:20px!important;line-height:1;padding:6px!important}
+#pageCheck{font-size:18px!important;padding:5px!important}
+#pageCheck.on{background:var(--primary-c)!important;border-color:var(--primary-c)!important;color:var(--on-primary)!important}
 #readerHeading{min-width:0;flex:1;display:flex;flex-direction:column;gap:2px}
 #readerTitle{font-family:var(--serif);font-size:17px;color:var(--on-surface);white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis}
@@ -255,6 +304,34 @@ input[type=range]{width:100%;accent-color:var(--primary-c);background:transparen
   </section>
 </div>
 
+<div class="modal" id="bookModal" aria-hidden="true">
+  <section class="book-panel" role="dialog" aria-modal="true" aria-labelledby="bookMenuTitle">
+    <div class="book-menu-head">
+      <div class="book-cover" id="bookMenuCover"><span class="cover-label" id="bookMenuCoverLabel"></span></div>
+      <div><small>Opciones del libro</small><h2 id="bookMenuTitle">Libro</h2></div>
+      <button class="icon-btn" id="bookMenuClose" aria-label="Cerrar opciones">&#215;</button>
+    </div>
+    <div id="bookActionsView">
+      <button class="sheet-action" data-book-action="read"><span class="action-icon">&#9655;</span><span>Leer libro</span><small>Continuar</small></button>
+      <button class="sheet-action" data-book-action="marks"><span class="action-icon">&#10003;</span><span>Páginas guardadas</span><small id="bookMarksCount">0</small></button>
+      <button class="sheet-action" data-book-action="cover"><span class="action-icon">&#9638;</span><span>Elegir portada</span><small>6 estilos</small></button>
+      <button class="sheet-action danger" data-book-action="delete"><span class="action-icon">&#215;</span><span>Eliminar libro</span><small>PDF y datos</small></button>
+    </div>
+    <div id="bookCoverView" class="hidden">
+      <button class="sheet-back" data-book-action="back">&#8592; Volver</button>
+      <h3 class="sheet-title">Elige una portada</h3>
+      <p class="sheet-copy">Son diseños de la app: no añaden imágenes ni aumentan el espacio usado.</p>
+      <div class="cover-grid" id="coverGrid"></div>
+    </div>
+    <div id="bookMarksView" class="hidden">
+      <button class="sheet-back" data-book-action="back">&#8592; Volver</button>
+      <h3 class="sheet-title">Páginas guardadas</h3>
+      <p class="sheet-copy">Toca una página para abrirla. Puedes quitarla con la ×.</p>
+      <div class="marks-list" id="marksList"></div>
+    </div>
+  </section>
+</div>
+
 <!-- READER -->
 <div id="reader">
   <div id="topBar" class="chrome">
@@ -263,6 +340,7 @@ input[type=range]{width:100%;accent-color:var(--primary-c);background:transparen
       <span id="readerTitle">Libro</span>
       <span id="readerPosition">Página —</span>
     </div>
+    <button id="pageCheck" aria-label="Guardar esta página" aria-pressed="false">&#10003;</button>
     <button id="zoomOut" aria-label="Alejar">A−</button>
     <button id="zoomIn" aria-label="Acercar">A+</button>
   </div>
@@ -286,6 +364,7 @@ input[type=range]{width:100%;accent-color:var(--primary-c);background:transparen
 <div id="toast"></div>
 
 <script src="streak.js"></script>
+<script src="library.js"></script>
 <script src="pdf.min.js"></script>
 <script src="app.js"></script>
 </body>

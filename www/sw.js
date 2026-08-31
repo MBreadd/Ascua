@@ -1,9 +1,10 @@
-const CACHE = 'ascua-v16';
+const CACHE = 'ascua-v17';
 
 const LOCAL = [
   './',
   './index.html',
   './app.js',
+  './library.js',
   './streak.js',
   './manifest.json',
   './icon-192.png',
@@ -11,7 +12,6 @@ const LOCAL = [
   './pdf.min.js',
   './pdf.worker.min.js',
   './fonts/eb-garamond-400.woff2',
-  './fonts/eb-garamond-500.woff2',
   './fonts/hanken-grotesk-300.woff2',
   './fonts/hanken-grotesk-400.woff2',
   './fonts/hanken-grotesk-500.woff2',

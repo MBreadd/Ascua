@@ -10,6 +10,8 @@
  * @property {number} totalPages
  * @property {string} addedAt
  * @property {string} lastOpenedAt
+ * @property {string} cover
+ * @property {number[]} checks
  */
 /**
  * @typedef {Object} EntradaLibroDia
@@ -38,6 +40,8 @@ if (PDFJS) PDFJS.GlobalWorkerOptions.workerSrc =
   'pdf.worker.min.js';
 const STREAK=window.AscuaStreak;
 if(!STREAK)throw new Error('No se cargó el motor de racha.');
+const LIBRARY=window.AscuaLibrary;
+if(!LIBRARY)throw new Error('No se cargó el motor de biblioteca.');
 
 /* ---------- almacenamiento ---------- */
 function db(){return new Promise((res,rej)=>{const r=indexedDB.open('ascua',1);
@@ -69,7 +73,7 @@ let pdfDoc=null, blobUrl=null, saveT=null;
 let libroActual=null;
 
 /** @returns {Estado} */
-function fresh(){return{schemaVersion:3,books:{},currentBookId:null,goal:10,
+function fresh(){return{schemaVersion:4,books:{},currentBookId:null,goal:10,
   reminderHour:21,history:{},startedAt:dayKey()};}
 
 function idLibro(){return 'b'+Date.now().toString(36)+Math.random().toString(36).slice(2,7);}
@@ -93,13 +97,13 @@ async function migrarAMultiLibro(raw){
   if(teniaLibroViejo||(blobViejo&&blobViejo.blob)){
     const id='b'+((raw&&raw.startedAt)||dayKey()).replace(/-/g,'')+'0';
     if(!nuevo.books[id]){
-      nuevo.books[id]={
+      nuevo.books[id]=LIBRARY.normalizeBook({
         id,
         name:(raw&&raw.bookName)||((blobViejo&&blobViejo.name)||'').replace(/\.pdf$/i,'')||'Libro',
         page:(raw&&raw.page)||1, scrollTop:(raw&&raw.scrollTop)||0, zoom:(raw&&raw.zoom)||1,
         totalPages:(raw&&raw.totalPages)||0,
         addedAt:(raw&&raw.startedAt)||dayKey(), lastOpenedAt:dayKey()
-      };
+      },id);
     }
     nuevo.currentBookId=id;
     if(blobViejo&&blobViejo.blob){
@@ -117,7 +121,8 @@ async function migrarAMultiLibro(raw){
     }
     nuevo.history=out;
   }
-  nuevo.schemaVersion=3;
+  for(const id in nuevo.books)nuevo.books[id]=LIBRARY.normalizeBook(nuevo.books[id],id);
+  nuevo.schemaVersion=4;
   return nuevo;
 }
 
@@ -132,11 +137,17 @@ async function loadState(){
     S=Object.assign(fresh(),raw);
     if(!S.history)S.history={};
     if(!S.books)S.books={};
+    for(const id in S.books){
+      const anterior=S.books[id],normalizado=LIBRARY.normalizeBook(anterior,id);
+      const checksAntes=Array.isArray(anterior.checks)?anterior.checks:[];
+      if(anterior.cover!==normalizado.cover||checksAntes.join(',')!==normalizado.checks.join(','))cambio=true;
+      S.books[id]=normalizado;
+    }
     for(const k in S.history){
       const e=S.history[k];
       if(e&&e.goal==null){e.goal=S.goal;cambio=true;}
     }
-    if(S.schemaVersion<3){S.schemaVersion=3;cambio=true;}
+    if(S.schemaVersion<4){S.schemaVersion=4;cambio=true;}
   }
   if(cambio)await kvSet('state',S).catch(()=>{});
 }
@@ -344,33 +355,113 @@ function cerrarCalendario(){
   document.body.classList.remove('modal-open');document.getElementById('streakOpen').focus();
 }
 
+/** @param {string} name */
+function etiquetaPortada(name){
+  const partes=String(name||'Libro').trim().split(/\s+/).filter(Boolean);
+  return (partes.length>1?partes[0][0]+partes[1][0]:partes[0].slice(0,2)).toUpperCase();
+}
+
+/** @param {Libro} libro */
+function crearPortada(libro){
+  const portada=document.createElement('span');portada.className='book-cover';
+  portada.dataset.cover=libro.cover;
+  const etiqueta=document.createElement('span');etiqueta.className='cover-label';
+  etiqueta.textContent=etiquetaPortada(libro.name);portada.appendChild(etiqueta);
+  return portada;
+}
+
 function pintarBiblioteca(){
   const cont=document.getElementById('library');
   cont.innerHTML='';
   const libros=Object.values(S.books).sort((a,b)=>b.lastOpenedAt.localeCompare(a.lastOpenedAt));
   for(const libro of libros){
-    const row=document.createElement('div');
-    row.className='row';
-
-    const info=document.createElement('div');
+    const row=document.createElement('article');row.className='library-book';
+    const abrir=document.createElement('button');abrir.className='book-open';
+    abrir.dataset.id=libro.id;abrir.dataset.accion='leer';
+    abrir.setAttribute('aria-label','Leer '+libro.name);
+    const info=document.createElement('span');info.className='book-info';
     const p=document.createElement('p');p.textContent=libro.name||'Libro';
     const small=document.createElement('small');
-    small.textContent=libro.totalPages?('Página '+libro.page+' de '+libro.totalPages):'—';
+    const guardadas=libro.checks.length;
+    small.textContent=(libro.totalPages?('Página '+libro.page+' de '+libro.totalPages):'—')+
+      (guardadas?' · '+guardadas+' '+(guardadas===1?'guardada':'guardadas'):'');
     info.appendChild(p);info.appendChild(small);
-
-    const acciones=document.createElement('div');
-    acciones.className='row-actions';
-    const btnLeer=document.createElement('button');
-    btnLeer.className='btn ghost sm';btnLeer.textContent='Leer';
-    btnLeer.dataset.id=libro.id;btnLeer.dataset.accion='leer';
-    const btnEliminar=document.createElement('button');
-    btnEliminar.className='btn ghost sm';btnEliminar.textContent='Eliminar';
-    btnEliminar.dataset.id=libro.id;btnEliminar.dataset.accion='eliminar';
-    acciones.appendChild(btnLeer);acciones.appendChild(btnEliminar);
-
-    row.appendChild(info);row.appendChild(acciones);
+    abrir.appendChild(crearPortada(libro));abrir.appendChild(info);
+    const menu=document.createElement('button');menu.className='more-btn';menu.textContent='⋮';
+    menu.dataset.id=libro.id;menu.dataset.accion='menu';
+    menu.setAttribute('aria-label','Opciones de '+libro.name);
+    row.appendChild(abrir);row.appendChild(menu);
     cont.appendChild(row);
   }
+}
+
+let menuBookId=null;
+const COVER_NAMES={ascua:'Ascua',bosque:'Bosque',oceano:'Océano',ciruela:'Ciruela',arena:'Arena',noche:'Noche'};
+
+/** @param {'actions'|'cover'|'marks'} vista */
+function mostrarVistaLibro(vista){
+  document.getElementById('bookActionsView').classList.toggle('hidden',vista!=='actions');
+  document.getElementById('bookCoverView').classList.toggle('hidden',vista!=='cover');
+  document.getElementById('bookMarksView').classList.toggle('hidden',vista!=='marks');
+  if(vista==='cover')pintarPortadas();
+  if(vista==='marks')pintarMarcas();
+}
+
+function actualizarCabeceraLibro(){
+  const libro=menuBookId&&S.books[menuBookId];if(!libro)return;
+  document.getElementById('bookMenuTitle').textContent=libro.name;
+  document.getElementById('bookMenuCover').dataset.cover=libro.cover;
+  document.getElementById('bookMenuCoverLabel').textContent=etiquetaPortada(libro.name);
+  const n=libro.checks.length;
+  document.getElementById('bookMarksCount').textContent=String(n);
+}
+
+function pintarPortadas(){
+  const libro=menuBookId&&S.books[menuBookId],grid=document.getElementById('coverGrid');
+  grid.replaceChildren();if(!libro)return;
+  for(const cover of LIBRARY.COVERS){
+    const btn=document.createElement('button');btn.className='cover-choice';
+    if(cover===libro.cover)btn.classList.add('selected');
+    btn.dataset.bookCover=cover;btn.setAttribute('aria-label','Portada '+COVER_NAMES[cover]);
+    const muestra=document.createElement('span');muestra.className='book-cover';muestra.dataset.cover=cover;
+    const inicial=document.createElement('span');inicial.className='cover-label';
+    inicial.textContent=etiquetaPortada(libro.name);muestra.appendChild(inicial);
+    const nombre=document.createElement('span');nombre.textContent=COVER_NAMES[cover];
+    btn.appendChild(muestra);btn.appendChild(nombre);grid.appendChild(btn);
+  }
+}
+
+function pintarMarcas(){
+  const libro=menuBookId&&S.books[menuBookId],lista=document.getElementById('marksList');
+  lista.replaceChildren();if(!libro)return;
+  if(!libro.checks.length){
+    const vacio=document.createElement('p');vacio.className='empty-state';
+    vacio.textContent='Todavía no guardaste ninguna. En el lector, toca ✓ para marcar una página.';
+    lista.appendChild(vacio);return;
+  }
+  for(const page of libro.checks){
+    const row=document.createElement('div');row.className='mark-row';
+    const open=document.createElement('button');open.className='mark-open';open.dataset.openPage=String(page);
+    open.innerHTML='<b>Página '+page+'</b><small>Abrir en el lector</small>';
+    const remove=document.createElement('button');remove.className='mark-remove';remove.textContent='×';
+    remove.dataset.removePage=String(page);remove.setAttribute('aria-label','Quitar página '+page);
+    row.appendChild(open);row.appendChild(remove);lista.appendChild(row);
+  }
+}
+
+/** @param {string} id */
+function abrirMenuLibro(id){
+  if(!S.books[id])return;menuBookId=id;actualizarCabeceraLibro();mostrarVistaLibro('actions');
+  const modal=document.getElementById('bookModal');modal.classList.add('on');modal.setAttribute('aria-hidden','false');
+  document.body.classList.add('modal-open');document.getElementById('bookMenuClose').focus();
+}
+
+function cerrarMenuLibro(){
+  const id=menuBookId,modal=document.getElementById('bookModal');
+  modal.classList.remove('on');modal.setAttribute('aria-hidden','true');document.body.classList.remove('modal-open');
+  menuBookId=null;
+  const btn=id&&document.querySelector('[data-accion="menu"][data-id="'+id+'"]');
+  if(btn)/** @type {HTMLElement} */(btn).focus();
 }
 
 function pintarSet(){
@@ -416,10 +507,10 @@ function soltar(c){c.width=0;c.height=0;}
 function revisarCache(){const k=keyNow();
   if(k!==cacheKey){cache.forEach(soltar);cache.clear();cacheKey=k;}}
 function podar(n){
-  cache.forEach((c,k)=>{if(k<n-1||k>n+3){soltar(c);cache.delete(k);}});
+  cache.forEach((c,k)=>{if(k<n-1||k>n+2){soltar(c);cache.delete(k);}});
   let pixels=0;cache.forEach(c=>pixels+=c.width*c.height);
-  const maxPixelsCache=10000000;
-  for(const k of [n-1,n+3,n+2]){
+  const maxPixelsCache=6000000;
+  for(const k of [n-1,n+2]){
     if(pixels<=maxPixelsCache)break;
     const c=cache.get(k);if(!c)continue;
     pixels-=c.width*c.height;soltar(c);cache.delete(k);
@@ -539,6 +630,7 @@ function actualizarPosicion(n,actualizarRange=true){
   document.getElementById('readerPosition').textContent=texto;
   document.getElementById('pageBig').textContent=texto;
   document.getElementById('pagePct').textContent=pct+'% leído';
+  pintarBotonCheck(n);
   if(actualizarRange){
     const rg=/** @type {HTMLInputElement} */(document.getElementById('pageRange'));
     rg.max=String(libroActual.totalPages);rg.value=String(n);
@@ -554,7 +646,7 @@ async function obtenerOff(n,segundoPlano=false,ligera=false,promover=true,calida
   if(pending.has(clave))return pending.get(clave);
   const k=cacheKey;
   const tarea=pintarOff(n,calidad,null,segundoPlano,requerida,promover).then(off=>{
-    if(k===cacheKey&&n>=libroActual.page-1&&n<=libroActual.page+3){
+    if(k===cacheKey&&n>=libroActual.page-1&&n<=libroActual.page+2){
       const anterior=cache.get(n);
       if(!anterior||anterior.width*anterior.height<off.width*off.height){
         cache.set(n,off);if(anterior)soltar(anterior);podar(libroActual.page);return off;
@@ -568,7 +660,7 @@ async function obtenerOff(n,segundoPlano=false,ligera=false,promover=true,calida
 }
 async function precargarAlrededor(n){
   const tok=++preloadTok;
-  for(const p of [n+1,n+2,n+3]){
+  for(const p of [n+1,n+2]){
     if(tok!==preloadTok)return;
     if(p<1||p>libroActual.totalPages)continue;
     const calidad=p===n+1?Math.max(1,libroActual.zoom):1;
@@ -613,6 +705,22 @@ function pintarLector(){
   actualizarPosicion(libroActual.page);
   document.getElementById('readToday').textContent='Hoy: '+paginasDe(e)+' pág';
   document.getElementById('readGoal').textContent='Meta: '+S.goal;
+}
+
+/** @param {number} [page] */
+function pintarBotonCheck(page){
+  if(!libroActual)return;
+  page=page||libroActual.page;
+  const marcada=libroActual.checks.includes(page),btn=document.getElementById('pageCheck');
+  btn.classList.toggle('on',marcada);btn.setAttribute('aria-pressed',String(marcada));
+  btn.setAttribute('aria-label',marcada?'Quitar página '+page+' de guardadas':'Guardar página '+page);
+}
+
+function alternarPaginaGuardada(){
+  if(!libroActual)return;
+  const cambio=LIBRARY.toggleCheck(libroActual.checks,libroActual.page,libroActual.totalPages);
+  libroActual.checks=cambio.checks;pintarBotonCheck();save();
+  toast(cambio.added?'Página '+libroActual.page+' guardada.':'Página '+libroActual.page+' quitada.');
 }
 
 let marca=0, segTimer=null;
@@ -755,6 +863,9 @@ let scT=null;
 wrap.addEventListener('scroll',()=>{clearTimeout(scT);
   scT=setTimeout(()=>{libroActual.scrollTop=wrap.scrollTop;save();},180);},{passive:true});
 document.addEventListener('keydown',ev=>{
+  if(ev.key==='Escape'&&document.getElementById('bookModal').classList.contains('on')){
+    cerrarMenuLibro();return;
+  }
   if(ev.key==='Escape'&&document.getElementById('streakModal').classList.contains('on')){
     cerrarCalendario();return;
   }
@@ -770,6 +881,7 @@ window.addEventListener('resize',()=>{
   clearTimeout(rzT); rzT=setTimeout(()=>{revisarCache();render(libroActual.page);},260);});
 
 document.getElementById('closeRead').onclick=cerrarLector;
+document.getElementById('pageCheck').onclick=alternarPaginaGuardada;
 document.getElementById('zoomIn').onclick=()=>cambiarZoom(libroActual.zoom+.25);
 document.getElementById('zoomOut').onclick=()=>cambiarZoom(libroActual.zoom-.25);
 document.getElementById('pageRange').oninput=ev=>{
@@ -785,8 +897,8 @@ async function agregarLibro(file){
   const id=idLibro();
   try{
     await kvSet('book:'+id,{name:file.name,blob:file});
-    S.books[id]={id,name:file.name.replace(/\.pdf$/i,''),page:1,scrollTop:0,zoom:1,totalPages:0,
-      addedAt:dayKey(),lastOpenedAt:dayKey()};
+    S.books[id]=LIBRARY.normalizeBook({id,name:file.name.replace(/\.pdf$/i,''),page:1,scrollTop:0,zoom:1,totalPages:0,
+      addedAt:dayKey(),lastOpenedAt:dayKey()},id);
     cache.forEach(soltar);cache.clear();cacheKey='';
     const ok=await abrirLibro(id);
     if(!ok){
@@ -803,18 +915,18 @@ async function agregarLibro(file){
 }
 /** @param {string} id */
 async function leerLibro(id){
-  if(!S.books[id])return;
+  if(!S.books[id])return false;
   if(!pdfDoc||!libroActual||S.currentBookId!==id){
     const ok=await abrirLibro(id);
-    if(!ok){toast('No se pudo leer el PDF.');return;}
+    if(!ok){toast('No se pudo leer el PDF.');return false;}
   }
-  abrirLector();
+  abrirLector();return true;
 }
 /** @param {string} id */
 async function eliminarLibro(id){
   const libro=S.books[id];
-  if(!libro)return;
-  if(!confirm('¿Eliminar "'+libro.name+'"? Se borra el PDF guardado; tu racha y tu historial no se tocan.'))return;
+  if(!libro)return false;
+  if(!confirm('¿Eliminar "'+libro.name+'"? Se borra el PDF guardado; tu racha y tu historial no se tocan.'))return false;
   if(S.currentBookId===id){
     if(pdfDoc){try{await pdfDoc.destroy();}catch(e){}pdfDoc=null;}
     if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=null;}
@@ -827,6 +939,7 @@ async function eliminarLibro(id){
   await saveNow();
   pintarHome();
   toast('Libro eliminado.');
+  return true;
 }
 document.getElementById('fileIn').onchange=ev=>agregarLibro(/** @type {HTMLInputElement} */(ev.target).files[0]);
 document.getElementById('addBookIn').onchange=ev=>agregarLibro(/** @type {HTMLInputElement} */(ev.target).files[0]);
@@ -836,7 +949,43 @@ document.getElementById('library').addEventListener('click',ev=>{
   const id=btn.dataset.id;
   if(!id)return;
   if(btn.dataset.accion==='leer')leerLibro(id);
-  else if(btn.dataset.accion==='eliminar')eliminarLibro(id);
+  else if(btn.dataset.accion==='menu')abrirMenuLibro(id);
+});
+
+document.getElementById('bookMenuClose').onclick=cerrarMenuLibro;
+document.getElementById('bookModal').addEventListener('click',async ev=>{
+  const modal=document.getElementById('bookModal');
+  if(ev.target===modal){cerrarMenuLibro();return;}
+  const target=/** @type {HTMLElement} */(ev.target);
+  const portada=/** @type {HTMLElement} */(target.closest('[data-book-cover]'));
+  const libro=menuBookId&&S.books[menuBookId];
+  if(portada&&libro){
+    libro.cover=portada.dataset.bookCover;save();pintarBiblioteca();actualizarCabeceraLibro();pintarPortadas();
+    toast('Portada actualizada.');return;
+  }
+  const quitar=/** @type {HTMLElement} */(target.closest('[data-remove-page]'));
+  if(quitar&&libro){
+    const page=Number(quitar.dataset.removePage);
+    libro.checks=libro.checks.filter(n=>n!==page);save();pintarMarcas();actualizarCabeceraLibro();pintarBiblioteca();
+    if(libroActual&&libroActual.id===libro.id)pintarBotonCheck();
+    toast('Página '+page+' quitada.');return;
+  }
+  const abrir=/** @type {HTMLElement} */(target.closest('[data-open-page]'));
+  if(abrir&&libro){
+    const id=libro.id,page=Number(abrir.dataset.openPage);
+    libro.page=page;libro.scrollTop=0;cerrarMenuLibro();await leerLibro(id);return;
+  }
+  const accion=/** @type {HTMLElement} */(target.closest('[data-book-action]'));
+  if(!accion||!libro)return;
+  if(accion.dataset.bookAction==='back'){mostrarVistaLibro('actions');return;}
+  if(accion.dataset.bookAction==='cover'){mostrarVistaLibro('cover');return;}
+  if(accion.dataset.bookAction==='marks'){mostrarVistaLibro('marks');return;}
+  if(accion.dataset.bookAction==='read'){
+    const id=libro.id;cerrarMenuLibro();await leerLibro(id);return;
+  }
+  if(accion.dataset.bookAction==='delete'){
+    const id=libro.id;if(await eliminarLibro(id))cerrarMenuLibro();
+  }
 });
 
 /* ---------- ajustes ---------- */
@@ -867,8 +1016,9 @@ document.getElementById('importIn').onchange=ev=>{
       const librosPrevios=S.books,idPrevio=S.currentBookId;
       S=Object.assign(fresh(),migrado);
       if(!S.books||!Object.keys(S.books).length){S.books=librosPrevios;S.currentBookId=idPrevio;}
+      for(const id in S.books)S.books[id]=LIBRARY.normalizeBook(S.books[id],id);
       for(const k in S.history)if(S.history[k]&&S.history[k].goal==null)S.history[k].goal=S.goal;
-      S.schemaVersion=3;
+      S.schemaVersion=4;
       await saveNow();pintarHome();pintarSet();toast('Progreso restaurado.');
     }catch(e){toast('Ese archivo no sirve. Debe ser el que exportó Ascua.');}
   };
@@ -910,6 +1060,7 @@ window.addEventListener('pagehide',()=>{
       }catch(e){}
     }
     AppPlugin.addListener('backButton',()=>{
+      if(document.getElementById('bookModal').classList.contains('on')){cerrarMenuLibro();return;}
       if(document.getElementById('streakModal').classList.contains('on')){cerrarCalendario();return;}
       if(document.getElementById('reader').classList.contains('on')){cerrarLector();return;}
       if(!document.getElementById('scHome').classList.contains('on')){pintarHome();show('scHome');return;}
