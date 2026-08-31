@@ -1,8 +1,10 @@
-const CACHE = 'ascua-v14';
+const CACHE = 'ascua-v16';
 
 const LOCAL = [
   './',
   './index.html',
+  './app.js',
+  './streak.js',
   './manifest.json',
   './icon-192.png',
   './icon-512.png',
@@ -40,6 +42,24 @@ self.addEventListener('activate', ev => {
 self.addEventListener('fetch', ev => {
   if (ev.request.method !== 'GET') return;
   ev.respondWith((async () => {
+    const url = new URL(ev.request.url);
+    const esInterfaz = url.origin === self.location.origin &&
+      (ev.request.mode === 'navigate' || /\.(?:html|js|css)$/.test(url.pathname));
+
+    if (esInterfaz) {
+      try {
+        const res = await fetch(ev.request);
+        if (res && res.ok) {
+          const c = await caches.open(CACHE);
+          c.put(ev.request, res.clone());
+        }
+        return res;
+      } catch (e) {
+        const hit = await caches.match(ev.request, { ignoreSearch: false });
+        return hit || (await caches.match('./index.html')) || Response.error();
+      }
+    }
+
     const hit = await caches.match(ev.request, { ignoreSearch: false });
     if (hit) return hit;
     try {

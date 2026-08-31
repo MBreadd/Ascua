@@ -20,6 +20,7 @@
  * @typedef {Object} EntradaDia
  * @property {Object<string,EntradaLibroDia>} books
  * @property {number} seconds
+ * @property {number} [goal]
  */
 /**
  * @typedef {Object} Estado
@@ -35,6 +36,8 @@
 const PDFJS = window['pdfjs-dist/build/pdf'] || window.pdfjsLib;
 if (PDFJS) PDFJS.GlobalWorkerOptions.workerSrc =
   'pdf.worker.min.js';
+const STREAK=window.AscuaStreak;
+if(!STREAK)throw new Error('No se cargó el motor de racha.');
 
 /* ---------- almacenamiento ---------- */
 function db(){return new Promise((res,rej)=>{const r=indexedDB.open('ascua',1);
@@ -66,7 +69,7 @@ let pdfDoc=null, blobUrl=null, saveT=null;
 let libroActual=null;
 
 /** @returns {Estado} */
-function fresh(){return{schemaVersion:2,books:{},currentBookId:null,goal:10,
+function fresh(){return{schemaVersion:3,books:{},currentBookId:null,goal:10,
   reminderHour:21,history:{},startedAt:dayKey()};}
 
 function idLibro(){return 'b'+Date.now().toString(36)+Math.random().toString(36).slice(2,7);}
@@ -107,28 +110,35 @@ async function migrarAMultiLibro(raw){
     for(const k in nuevo.history){
       /** @type {any} */
       const e=nuevo.history[k];
-      if(e&&e.books){out[k]=e;continue;}
+      if(e&&e.books){out[k]=Object.assign({goal:nuevo.goal},e);continue;}
       out[k]=e&&(e.startPage!=null||e.maxPage!=null)
-        ?{books:{[id]:{startPage:e.startPage||0,maxPage:e.maxPage||0}},seconds:e.seconds||0}
-        :(e||{books:{},seconds:0});
+        ?{books:{[id]:{startPage:e.startPage||0,maxPage:e.maxPage||0}},seconds:e.seconds||0,goal:nuevo.goal}
+        :Object.assign({books:{},seconds:0,goal:nuevo.goal},e||{});
     }
     nuevo.history=out;
   }
-  nuevo.schemaVersion=2;
+  nuevo.schemaVersion=3;
   return nuevo;
 }
 
 /** @returns {Promise<void>} */
 async function loadState(){
   const raw=await kvGet('state');
+  let cambio=false;
   if(!raw||!(raw.schemaVersion>=2)){
     S=await migrarAMultiLibro(raw);
-    await kvSet('state',S).catch(()=>{});
+    cambio=true;
   }else{
     S=Object.assign(fresh(),raw);
     if(!S.history)S.history={};
     if(!S.books)S.books={};
+    for(const k in S.history){
+      const e=S.history[k];
+      if(e&&e.goal==null){e.goal=S.goal;cambio=true;}
+    }
+    if(S.schemaVersion<3){S.schemaVersion=3;cambio=true;}
   }
+  if(cambio)await kvSet('state',S).catch(()=>{});
 }
 function save(){clearTimeout(saveT);saveT=setTimeout(()=>{kvSet('state',S).catch(()=>{});},350);}
 function saveNow(){clearTimeout(saveT);return kvSet('state',S).catch(()=>{});}
@@ -159,7 +169,9 @@ async function programarRecordatorio(){
 /** @returns {EntradaDia} */
 function today(){
   const k=dayKey();
-  if(!S.history[k])S.history[k]={books:{},seconds:0};
+  if(!S.history[k])S.history[k]={books:{},seconds:0,goal:S.goal};
+  if(!S.history[k].books)S.history[k].books={};
+  if(S.history[k].goal==null)S.history[k].goal=S.goal;
   return S.history[k];
 }
 /**
@@ -169,6 +181,7 @@ function today(){
  * @returns {EntradaLibroDia}
  */
 function entradaDeLibro(e,bookId,paginaActual){
+  if(!e.books)e.books={};
   if(!e.books[bookId])e.books[bookId]={startPage:paginaActual,maxPage:paginaActual};
   return e.books[bookId];
 }
@@ -177,39 +190,24 @@ function entradaDeLibro(e,bookId,paginaActual){
  * @returns {number}
  */
 function paginasDe(e){
-  if(!e)return 0;
-  let t=0;
-  for(const id in e.books)t+=Math.max(0,e.books[id].maxPage-e.books[id].startPage);
-  return t;
+  return STREAK.pages(e);
 }
 /** @param {EntradaDia|undefined} e */
-function cuenta(e){return !!e && paginasDe(e)>=1 && e.seconds>=MIN_SEG;}
+function diaCumplido(e){return STREAK.completed(e,S.goal,MIN_SEG);}
+/** @param {EntradaDia|undefined} e */
+function tieneActividad(e){return STREAK.hasActivity(e);}
+
+function analizarRacha(){
+  return STREAK.analyze(S.history,{startedAt:S.startedAt,today:dayKey(),defaultGoal:S.goal,
+    minSeconds:MIN_SEG,gracePerMonth:GRACIA_MES});
+}
 
 function graciaUsada(mes){
-  let n=0,k=addDays(dayKey(),-1);
-  for(let i=0;i<40;i++){
-    if(k.slice(0,7)!==mes)break;
-    if(k<S.startedAt)break;
-    if(!cuenta(S.history[k]))n++;
-    k=addDays(k,-1);
-  }
-  return n;
+  return analizarRacha().graceByMonth[mes]||0;
 }
 
 function racha(){
-  let n=0,usadas={},k=dayKey();
-  if(!cuenta(S.history[k]))k=addDays(k,-1);
-  for(let i=0;i<500;i++){
-    if(k<S.startedAt)break;
-    if(cuenta(S.history[k])){n++;}
-    else{
-      if(n===0)break;
-      const m=k.slice(0,7);usadas[m]=(usadas[m]||0)+1;
-      if(usadas[m]>GRACIA_MES)break;
-    }
-    k=addDays(k,-1);
-  }
-  return n;
+  return analizarRacha().current;
 }
 
 function ritmo(){
@@ -232,27 +230,52 @@ function show(id){
 function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('on');
   setTimeout(()=>t.classList.remove('on'),3200);}
 
+/** @param {string} key @param {ReturnType<typeof analizarRacha>} analisis */
+function estadoDia(key,analisis){
+  const hoy=dayKey();
+  if(key>hoy)return 'future';
+  if(key<S.startedAt)return 'before';
+  if(analisis.fulfilled.has(key))return 'full';
+  if(analisis.grace.has(key))return 'grace';
+  if(tieneActividad(S.history[key]))return 'part';
+  return key===hoy?'pending':'missed';
+}
+
+/** @param {string} key @param {string} estado */
+function descripcionDia(key,estado){
+  const e=S.history[key],p=paginasDe(e),min=Math.floor(((e&&e.seconds)||0)/60);
+  const base=key+' · '+p+' '+(p===1?'página':'páginas')+' · '+min+' min';
+  if(estado==='future')return 'Día futuro · '+key;
+  if(estado==='before')return 'Anterior al inicio de Ascua · '+key;
+  if(estado==='full')return 'Meta cumplida · '+base;
+  if(estado==='grace')return 'Día de gracia · '+base;
+  if(estado==='part')return 'Lectura parcial · '+base;
+  if(estado==='pending')return 'Hoy pendiente · '+base;
+  return 'Sin lectura · '+key;
+}
+
 function pintarHome(){
-  const r=racha(), e=today(), hoy=paginasDe(e);
+  const analisis=analizarRacha(),r=analisis.current,e=today(),hoy=paginasDe(e);
   document.getElementById('streakNum').textContent=String(r);
   document.getElementById('streakLabel').textContent=r===1?'día de racha':'días de racha';
 
   const w=document.getElementById('week');w.innerHTML='';
   const hk=dayKey(), dow=(new Date(hk+'T12:00:00').getDay()+6)%7;
   for(let i=0;i<7;i++){
-    const k=addDays(hk,i-dow), ent=S.history[k], d=document.createElement('div');
-    d.className='dot';
-    if(k===hk){d.className='dot today';d.innerHTML='<i></i>';}
-    else if(k>hk){d.className='dot';}
-    else if(ent&&paginasDe(ent)>=S.goal&&ent.seconds>=MIN_SEG)d.className='dot full';
-    else if(cuenta(ent))d.className='dot part';
-    else if(k>=S.startedAt)d.className='dot frozen';
-    w.appendChild(d);
+    const k=addDays(hk,i-dow),estado=estadoDia(k,analisis);
+    const dia=document.createElement('span');dia.className='week-day';
+    const nombre=document.createElement('span');nombre.className='week-name';nombre.textContent=['L','M','X','J','V','S','D'][i];
+    const punto=document.createElement('span');punto.className='dot';
+    if(['full','part','grace','missed'].includes(estado))punto.classList.add(estado);
+    if(k===hk)punto.classList.add('today');
+    dia.title=descripcionDia(k,estado);dia.appendChild(nombre);dia.appendChild(punto);w.appendChild(dia);
   }
   const falta=Math.max(0,S.goal-hoy);
-  document.getElementById('todayLine').textContent = hoy===0
-    ? 'Hoy no has leído'
-    : (falta>0 ? hoy+' de '+S.goal+' páginas hoy · faltan '+falta : '¡Meta de hoy cumplida!');
+  document.getElementById('todayLine').textContent = diaCumplido(e)
+    ? '¡Meta de hoy cumplida!'
+    : (hoy===0 ? 'Hoy no has leído'
+      : (falta>0 ? hoy+' de '+S.goal+' páginas hoy · faltan '+falta
+        : 'Meta de páginas alcanzada · completa 2 minutos'));
 
   const lib=S.books[S.currentBookId]||null;
   document.getElementById('bookTitle').textContent=lib?lib.name:'Sin libro';
@@ -268,6 +291,57 @@ function pintarHome(){
   document.getElementById('goRead').textContent = lib&&lib.page>1?'Seguir leyendo':'Empezar a leer';
 
   pintarBiblioteca();
+}
+
+let mesCalendario=dayKey().slice(0,7)+'-01';
+
+/** @param {string} key @param {number} delta */
+function moverMes(key,delta){
+  const p=key.split('-').map(Number),d=new Date(p[0],p[1]-1+delta,1,12);
+  return dayKey(d).slice(0,7)+'-01';
+}
+
+function pintarCalendario(){
+  const analisis=analizarRacha(),p=mesCalendario.split('-').map(Number),y=p[0],m=p[1];
+  const titulo=MES[m-1].charAt(0).toUpperCase()+MES[m-1].slice(1)+' '+y;
+  document.getElementById('calendarTitle').textContent=titulo;
+  const grid=document.getElementById('calendarGrid');grid.innerHTML='';
+  const primerDia=(new Date(y,m-1,1,12).getDay()+6)%7;
+  const cantidad=new Date(y,m,0,12).getDate();
+  for(let i=0;i<primerDia;i++){
+    const vacio=document.createElement('span');vacio.className='cal-day blank';grid.appendChild(vacio);
+  }
+  let cumplidosMes=0;
+  for(let n=1;n<=cantidad;n++){
+    const key=y+'-'+String(m).padStart(2,'0')+'-'+String(n).padStart(2,'0');
+    const estado=estadoDia(key,analisis),celda=document.createElement('div');
+    celda.className='cal-day';celda.setAttribute('role','img');
+    if(['full','part','grace','missed'].includes(estado))celda.classList.add(estado);
+    if(key===dayKey())celda.classList.add('today');
+    if(estado==='full')cumplidosMes++;
+    const numero=document.createElement('b');numero.textContent=String(n);celda.appendChild(numero);
+    const paginas=paginasDe(S.history[key]);
+    if(paginas>0){const dato=document.createElement('small');dato.textContent=paginas+' pág.';celda.appendChild(dato);}
+    const descripcion=descripcionDia(key,estado);celda.title=descripcion;celda.setAttribute('aria-label',descripcion);
+    grid.appendChild(celda);
+  }
+  const usadas=analisis.graceByMonth[mesCalendario.slice(0,7)]||0;
+  document.getElementById('calendarSummary').textContent=analisis.current+' '+(analisis.current===1?'día':'días')+
+    ' de racha actual · '+cumplidosMes+' cumplidos este mes · '+usadas+' de '+GRACIA_MES+' días de gracia usados';
+  /** @type {HTMLButtonElement} */(document.getElementById('calendarPrev')).disabled=
+    mesCalendario.slice(0,7)<=S.startedAt.slice(0,7);
+  /** @type {HTMLButtonElement} */(document.getElementById('calendarNext')).disabled=
+    mesCalendario.slice(0,7)>=dayKey().slice(0,7);
+}
+
+function abrirCalendario(){
+  mesCalendario=dayKey().slice(0,7)+'-01';pintarCalendario();
+  const modal=document.getElementById('streakModal');modal.classList.add('on');modal.setAttribute('aria-hidden','false');
+  document.body.classList.add('modal-open');document.getElementById('calendarClose').focus();
+}
+function cerrarCalendario(){
+  const modal=document.getElementById('streakModal');modal.classList.remove('on');modal.setAttribute('aria-hidden','true');
+  document.body.classList.remove('modal-open');document.getElementById('streakOpen').focus();
 }
 
 function pintarBiblioteca(){
@@ -527,8 +601,9 @@ async function render(n){
 function irA(n){
   n=Math.max(1,Math.min(libroActual.totalPages,n));
   if(n===libroActual.page)return;
+  const paginaAnterior=libroActual.page;
   libroActual.page=n;
-  const e=today(); const eb=entradaDeLibro(e,libroActual.id,n); if(n>eb.maxPage)eb.maxPage=n;
+  const e=today(); const eb=entradaDeLibro(e,libroActual.id,paginaAnterior); if(n>eb.maxPage)eb.maxPage=n;
   libroActual.scrollTop=0; wrap.scrollTop=0;
   render(n); pintarLector(); save();
 }
@@ -680,6 +755,9 @@ let scT=null;
 wrap.addEventListener('scroll',()=>{clearTimeout(scT);
   scT=setTimeout(()=>{libroActual.scrollTop=wrap.scrollTop;save();},180);},{passive:true});
 document.addEventListener('keydown',ev=>{
+  if(ev.key==='Escape'&&document.getElementById('streakModal').classList.contains('on')){
+    cerrarCalendario();return;
+  }
   if(!document.getElementById('reader').classList.contains('on'))return;
   if(ev.key==='ArrowRight'||ev.key===' ')irA(libroActual.page+1);
   if(ev.key==='ArrowLeft')irA(libroActual.page-1);
@@ -764,7 +842,8 @@ document.getElementById('library').addEventListener('click',ev=>{
 /* ---------- ajustes ---------- */
 document.getElementById('goalIn').onchange=ev=>{
   const t=/** @type {HTMLInputElement} */(ev.target);
-  S.goal=Math.max(1,Math.min(200,parseInt(t.value,10)||10));t.value=String(S.goal);save();};
+  S.goal=Math.max(1,Math.min(200,parseInt(t.value,10)||10));t.value=String(S.goal);
+  today().goal=S.goal;save();pintarHome();pintarSet();};
 document.getElementById('hourIn').onchange=ev=>{
   const t=/** @type {HTMLInputElement} */(ev.target);
   S.reminderHour=Math.max(0,Math.min(23,parseInt(t.value,10)||21));t.value=String(S.reminderHour);save();
@@ -788,6 +867,8 @@ document.getElementById('importIn').onchange=ev=>{
       const librosPrevios=S.books,idPrevio=S.currentBookId;
       S=Object.assign(fresh(),migrado);
       if(!S.books||!Object.keys(S.books).length){S.books=librosPrevios;S.currentBookId=idPrevio;}
+      for(const k in S.history)if(S.history[k]&&S.history[k].goal==null)S.history[k].goal=S.goal;
+      S.schemaVersion=3;
       await saveNow();pintarHome();pintarSet();toast('Progreso restaurado.');
     }catch(e){toast('Ese archivo no sirve. Debe ser el que exportó Ascua.');}
   };
@@ -796,6 +877,13 @@ document.getElementById('importIn').onchange=ev=>{
 
 document.getElementById('tabHome').onclick=()=>{pintarHome();show('scHome');};
 document.getElementById('tabSet').onclick=()=>{pintarSet();show('scSet');};
+document.getElementById('streakOpen').onclick=abrirCalendario;
+document.getElementById('calendarClose').onclick=cerrarCalendario;
+document.getElementById('calendarPrev').onclick=()=>{mesCalendario=moverMes(mesCalendario,-1);pintarCalendario();};
+document.getElementById('calendarNext').onclick=()=>{mesCalendario=moverMes(mesCalendario,1);pintarCalendario();};
+document.getElementById('streakModal').addEventListener('click',ev=>{
+  if(ev.target===document.getElementById('streakModal'))cerrarCalendario();
+});
 document.getElementById('goRead').onclick=async()=>{
   if(!S.currentBookId){toast('Carga un PDF primero.');return;}
   if(!pdfDoc||!libroActual){const ok=await abrirLibro(S.currentBookId);if(!ok){toast('Carga un PDF primero.');return;}}
@@ -815,7 +903,14 @@ window.addEventListener('pagehide',()=>{
 
   const AppPlugin=window.Capacitor&&window.Capacitor.Plugins&&window.Capacitor.Plugins.App;
   if(AppPlugin){
+    if(AppPlugin.getInfo){
+      try{
+        const info=await AppPlugin.getInfo();
+        document.getElementById('appVersion').textContent=info.version+' ('+info.build+')';
+      }catch(e){}
+    }
     AppPlugin.addListener('backButton',()=>{
+      if(document.getElementById('streakModal').classList.contains('on')){cerrarCalendario();return;}
       if(document.getElementById('reader').classList.contains('on')){cerrarLector();return;}
       if(!document.getElementById('scHome').classList.contains('on')){pintarHome();show('scHome');return;}
       AppPlugin.minimizeApp();
@@ -836,7 +931,8 @@ window.addEventListener('pagehide',()=>{
     pintarHome();pintarSet();show('scHome');
   }else{show('scOnboard');}
 
-  if('serviceWorker' in navigator){
+  const esNativa=!!(window.Capacitor&&window.Capacitor.isNativePlatform&&window.Capacitor.isNativePlatform());
+  if(!esNativa&&'serviceWorker' in navigator){
     navigator.serviceWorker.register('sw.js').catch(()=>{});
   }
 })();

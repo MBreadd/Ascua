@@ -1,10 +1,12 @@
 {
   "name": "ascua",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Lector de PDF para Android con sistema de hábito de lectura. Un libro a la vez, meta diaria de páginas y racha con días de gracia. PWA instalable, funciona sin conexión y no manda ningún dato a ningún servidor.",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "check": "tsc --noEmit",
+    "test": "node tests/streak.test.js",
+    "android:run": "cap run android"
   },
   "repository": {
     "type": "git",

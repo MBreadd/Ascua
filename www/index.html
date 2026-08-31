@@ -21,25 +21,39 @@
   --on-surface:#ece1d0; --on-surface-var:#d4c5ab; --outline:#9c8f78; --outline-var:#4f4632;
   --serif:'EB Garamond',Georgia,serif;
   --sans:'Hanken Grotesk',system-ui,-apple-system,sans-serif;
+  --safe-top:var(--safe-area-inset-top,env(safe-area-inset-top,0px));
+  --safe-right:var(--safe-area-inset-right,env(safe-area-inset-right,0px));
+  --safe-bottom:var(--safe-area-inset-bottom,env(safe-area-inset-bottom,0px));
+  --safe-left:var(--safe-area-inset-left,env(safe-area-inset-left,0px));
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;padding:0;height:100%;overscroll-behavior:none}
 body{background:var(--bg);color:var(--on-surface);font-family:var(--sans);
   -webkit-font-smoothing:antialiased}
+body.modal-open{overflow:hidden}
+body::before{content:"";position:fixed;inset:0 0 auto;height:var(--safe-top);background:var(--bg);
+  z-index:100;pointer-events:none}
 .label{font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--on-surface-var)}
-.screen{display:none;flex-direction:column;min-height:100dvh;padding:24px 24px 108px;max-width:600px;margin:0 auto}
+.screen{display:none;flex-direction:column;min-height:100dvh;
+  padding:calc(24px + var(--safe-top)) calc(24px + var(--safe-right)) calc(108px + var(--safe-bottom)) calc(24px + var(--safe-left));
+  max-width:600px;margin:0 auto}
 .screen.on{display:flex}
 #scOnboard.on{justify-content:center}
 .brand{font-family:var(--serif);font-size:28px;letter-spacing:.22em;color:var(--primary);text-align:center;padding:16px 0 32px;margin:0;font-weight:400}
 .streak-num{font-size:80px;line-height:1;font-weight:300;letter-spacing:-.03em;color:var(--on-surface);margin-bottom:10px}
 .center{display:flex;flex-direction:column;align-items:center;text-align:center}
-.week{display:flex;gap:12px;margin-top:32px;align-items:center}
+.streak-open{width:100%;border:0;background:none;color:inherit;font:inherit;padding:0;cursor:pointer}
+.streak-open:active{transform:scale(.985)}
+.streak-hint{font-size:11px;color:var(--primary);margin-top:14px;letter-spacing:.08em;text-transform:uppercase}
+.week{display:grid;grid-template-columns:repeat(7,1fr);gap:14px;margin-top:28px;align-items:center}
+.week-day{display:flex;flex-direction:column;align-items:center;gap:9px;min-width:22px}
+.week-name{font-size:10px;color:var(--on-surface-var);text-transform:uppercase}
 .dot{width:12px;height:12px;border-radius:9999px;border:1px solid var(--outline-var)}
 .dot.full{background:var(--tint);border-color:var(--tint)}
-.dot.part{border-color:var(--tint)}
-.dot.frozen{border-color:var(--outline);border-style:dashed}
-.dot.today{width:16px;height:16px;border:2px dashed var(--primary);display:flex;align-items:center;justify-content:center}
-.dot.today i{width:6px;height:6px;border-radius:9999px;background:var(--primary);display:block}
+.dot.part{border:2px solid var(--tint)}
+.dot.grace{border:2px dashed var(--outline);background:rgba(255,228,175,.12)}
+.dot.missed{border-color:var(--outline-var);opacity:.45}
+.dot.today{outline:2px solid var(--primary);outline-offset:3px}
 .card{background:var(--surface);padding:24px;margin-top:48px}
 .card h2{font-family:var(--serif);font-size:32px;line-height:1.2;font-weight:400;margin:12px 0 8px;color:var(--on-surface)}
 .meta{font-size:16px;color:var(--on-surface-var);margin:0 0 28px}
@@ -51,8 +65,8 @@ body{background:var(--bg);color:var(--on-surface);font-family:var(--sans);
 .btn.solid{background:var(--primary-c);border-color:var(--primary-c);color:var(--on-primary)}
 .btn.ghost{border-color:var(--outline-var);color:var(--on-surface-var)}
 .spacer{flex:1;min-height:32px}
-nav{position:fixed;bottom:0;left:0;width:100%;height:80px;display:flex;justify-content:space-around;
-  align-items:center;background:var(--surface);z-index:40}
+nav{position:fixed;bottom:0;left:0;width:100%;height:calc(80px + var(--safe-bottom));padding-bottom:var(--safe-bottom);
+  display:flex;justify-content:space-around;align-items:center;background:var(--surface);z-index:40}
 nav div{display:flex;flex-direction:column;align-items:center;gap:6px;cursor:pointer;color:var(--on-surface-var);opacity:.6}
 nav div.act{color:var(--primary);opacity:1}
 nav svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.6}
@@ -64,6 +78,35 @@ nav svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.6}
 input[type=number],select{background:var(--surface-high);border:1px solid var(--outline-var);color:var(--on-surface);
   padding:10px 12px;font-family:var(--sans);font-size:15px;width:88px;text-align:center}
 .note{font-size:13px;color:var(--on-surface-var);line-height:1.6;margin:24px 0 0}
+.modal{display:none;position:fixed;inset:0;z-index:110;background:rgba(8,6,2,.72);align-items:flex-end;justify-content:center;
+  padding:var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left)}
+.modal.on{display:flex}
+.calendar-panel{width:100%;max-width:600px;max-height:calc(100dvh - var(--safe-top));overflow:auto;
+  background:var(--surface);padding:22px 20px 28px;border-top:1px solid var(--outline-var);box-shadow:0 -18px 60px rgba(0,0,0,.35)}
+.calendar-head{display:grid;grid-template-columns:42px 1fr 42px 42px;align-items:center;gap:6px;margin-bottom:22px}
+.calendar-title{font-family:var(--serif);font-size:25px;font-weight:400;text-align:center;margin:0;color:var(--on-surface);text-transform:capitalize}
+.icon-btn{width:42px;height:42px;border:1px solid var(--outline-var);background:transparent;color:var(--primary);font-size:20px;cursor:pointer}
+.icon-btn:disabled{opacity:.25}
+.calendar-weekdays,.calendar-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+.calendar-weekdays{margin-bottom:8px}
+.calendar-weekdays span{text-align:center;font-size:10px;text-transform:uppercase;color:var(--on-surface-var);font-weight:600}
+.cal-day{aspect-ratio:1;min-height:42px;border:1px solid transparent;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:3px;color:var(--on-surface-var);position:relative}
+.cal-day b{font-size:13px;font-weight:500}
+.cal-day small{font-size:8px;color:inherit;white-space:nowrap}
+.cal-day.full{background:var(--tint);color:var(--on-primary)}
+.cal-day.part{border-color:var(--tint);color:var(--primary)}
+.cal-day.grace{border:1px dashed var(--outline);background:rgba(255,228,175,.08)}
+.cal-day.missed{opacity:.42}
+.cal-day.today{outline:2px solid var(--primary);outline-offset:1px}
+.cal-day.blank{visibility:hidden}
+.calendar-summary{font-size:13px;line-height:1.5;color:var(--on-surface-var);text-align:center;margin:20px 0 0}
+.calendar-legend{display:flex;flex-wrap:wrap;justify-content:center;gap:12px 16px;margin-top:18px}
+.calendar-legend span{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--on-surface-var)}
+.legend-dot{width:9px;height:9px;border-radius:99px;border:1px solid var(--outline-var)}
+.legend-dot.full{background:var(--tint);border-color:var(--tint)}
+.legend-dot.part{border:2px solid var(--tint)}
+.legend-dot.grace{border:1px dashed var(--outline);background:rgba(255,228,175,.12)}
 #reader{display:none;position:fixed;inset:0;background:var(--bg);z-index:60;flex-direction:column}
 #reader.on{display:flex}
 #pageWrap{flex:1;overflow:auto;position:relative;overscroll-behavior:contain;
@@ -81,8 +124,8 @@ input[type=number],select{background:var(--surface-high);border:1px solid var(--
 .chrome{position:absolute;left:0;width:100%;background:rgba(24,19,9,.97);z-index:70;
   transition:transform .2s ease;padding:14px 18px;box-shadow:0 3px 18px rgba(0,0,0,.28)}
 #topBar{top:0;transform:translateY(-105%);display:flex;align-items:center;gap:12px;
-  padding-top:calc(12px + env(safe-area-inset-top));min-height:66px}
-#botBar{bottom:0;transform:translateY(105%);padding:18px 20px calc(18px + env(safe-area-inset-bottom))}
+  padding-top:calc(12px + var(--safe-top));min-height:calc(66px + var(--safe-top))}
+#botBar{bottom:0;transform:translateY(105%);padding:18px 20px calc(18px + var(--safe-bottom))}
 #topBar.show,#botBar.show{transform:translateY(0)}
 #topBar button{background:none;border:1px solid var(--outline-var);color:var(--primary);font-size:13px;
   font-weight:600;cursor:pointer;padding:8px 10px;font-family:var(--sans);min-width:42px;height:38px}
@@ -129,12 +172,15 @@ input[type=range]{width:100%;accent-color:var(--primary-c);background:transparen
 <!-- DASHBOARD -->
 <section id="scHome" class="screen">
   <h1 class="brand">ASCUA</h1>
-  <div class="center" style="margin-top:32px">
-    <div class="streak-num" id="streakNum">0</div>
-    <div class="label" id="streakLabel">días de racha</div>
-    <div class="week" id="week"></div>
-    <div id="todayLine"></div>
-  </div>
+  <button class="streak-open" id="streakOpen" aria-label="Ver calendario de racha">
+    <span class="center" style="margin-top:32px">
+      <span class="streak-num" id="streakNum">0</span>
+      <span class="label" id="streakLabel">días de racha</span>
+      <span class="week" id="week"></span>
+      <span id="todayLine"></span>
+      <span class="streak-hint">Ver calendario</span>
+    </span>
+  </button>
   <div class="card">
     <div class="label">Leyendo ahora</div>
     <h2 id="bookTitle">—</h2>
@@ -170,6 +216,9 @@ input[type=range]{width:100%;accent-color:var(--primary-c);background:transparen
   <div class="row">
     <div><p>Almacenamiento</p><small id="persistState">Comprobando…</small></div>
   </div>
+  <div class="row">
+    <div><p>Versión</p><small id="appVersion">Web</small></div>
+  </div>
   <div style="margin-top:32px;display:flex;flex-direction:column;gap:12px">
     <button class="btn ghost" id="exportBtn">Exportar mi progreso</button>
     <label class="btn ghost" style="text-align:center">Restaurar desde archivo
@@ -183,6 +232,28 @@ input[type=range]{width:100%;accent-color:var(--primary-c);background:transparen
   <div id="tabHome" class="act"><svg viewBox="0 0 24 24"><path d="M4 5h7a2 2 0 0 1 2 2v12a2 2 0 0 0-2-2H4zM20 5h-7a2 2 0 0 0-2 2v12a2 2 0 0 1 2-2h7z"/></svg><span class="label">Hoy</span></div>
   <div id="tabSet"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg><span class="label">Ajustes</span></div>
 </nav>
+
+<div class="modal" id="streakModal" aria-hidden="true">
+  <section class="calendar-panel" role="dialog" aria-modal="true" aria-labelledby="calendarTitle">
+    <div class="calendar-head">
+      <button class="icon-btn" id="calendarPrev" aria-label="Mes anterior">&#8249;</button>
+      <h2 class="calendar-title" id="calendarTitle">Racha</h2>
+      <button class="icon-btn" id="calendarNext" aria-label="Mes siguiente">&#8250;</button>
+      <button class="icon-btn" id="calendarClose" aria-label="Cerrar calendario">&#215;</button>
+    </div>
+    <div class="calendar-weekdays" aria-hidden="true">
+      <span>L</span><span>M</span><span>X</span><span>J</span><span>V</span><span>S</span><span>D</span>
+    </div>
+    <div class="calendar-grid" id="calendarGrid"></div>
+    <p class="calendar-summary" id="calendarSummary"></p>
+    <div class="calendar-legend">
+      <span><i class="legend-dot full"></i>Meta cumplida</span>
+      <span><i class="legend-dot part"></i>Lectura parcial</span>
+      <span><i class="legend-dot grace"></i>Día de gracia</span>
+      <span><i class="legend-dot"></i>Sin lectura</span>
+    </div>
+  </section>
+</div>
 
 <!-- READER -->
 <div id="reader">
@@ -214,6 +285,7 @@ input[type=range]{width:100%;accent-color:var(--primary-c);background:transparen
 
 <div id="toast"></div>
 
+<script src="streak.js"></script>
 <script src="pdf.min.js"></script>
 <script src="app.js"></script>
 </body>
