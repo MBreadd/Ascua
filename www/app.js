@@ -43,6 +43,18 @@ const STREAK=window.AscuaStreak;
 if(!STREAK)throw new Error('No se cargó el motor de racha.');
 const LIBRARY=window.AscuaLibrary;
 if(!LIBRARY)throw new Error('No se cargó el motor de biblioteca.');
+const PAGE_SHARE=window.AscuaPageShare;
+if(!PAGE_SHARE)throw new Error('No se cargó el módulo para compartir páginas.');
+
+const DEEPSEEK_PACKAGE='com.deepseek.chat';
+const PAGE_SHARE_PROMPT=`Esta es una página de un libro que estoy leyendo. Explícamela en español, en términos simples.
+
+- Empieza con la idea central en dos o tres líneas.
+- Luego desarrolla los puntos importantes.
+- Define los términos técnicos que aparezcan.
+- Si hay diagramas, fórmulas o tablas, explícalos también.
+
+Básate únicamente en lo que aparece en la página. Si algo no se alcanza a leer o te falta contexto, dímelo en vez de adivinar.`;
 
 /* ---------- almacenamiento ---------- */
 function db(){return new Promise((res,rej)=>{const r=indexedDB.open('ascua',1);
@@ -230,8 +242,9 @@ function show(id){
   document.getElementById('tabHome').classList.toggle('act',id==='scHome');
   document.getElementById('tabSet').classList.toggle('act',id==='scSet');
 }
-function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('on');
-  setTimeout(()=>t.classList.remove('on'),3200);}
+let toastT=null;
+function toast(msg){const t=document.getElementById('toast');clearTimeout(toastT);
+  t.textContent=msg;t.classList.add('on');toastT=setTimeout(()=>t.classList.remove('on'),3200);}
 
 /** @param {string} key @param {ReturnType<typeof analizarRacha>} analisis */
 function estadoDia(key,analisis){
@@ -613,6 +626,62 @@ const wrap=document.getElementById('pageWrap'), stage=document.getElementById('p
 let cache=new Map(), pending=new Map(), cacheKey='', renderTok=0, preloadTok=0;
 let canvasBaseW=0,canvasBaseH=0,canvasQuality=1,qualityT=null,qualityTok=0,qualityTask=null;
 let textTok=0,textRenderTask=null,postTimers=[],interactuando=false;
+let compartiendoPagina=false;
+
+function pluginCompartirPagina(){
+  return window.Capacitor&&window.Capacitor.Plugins&&window.Capacitor.Plugins.PageShare;
+}
+
+function errorCompartir(stage,cause){
+  const error=cause instanceof Error?cause:new Error(String(cause||'Error desconocido.'));
+  /** @type {any} */(error).ascuaStage=stage;return error;
+}
+
+async function compartirPaginaActual(){
+  if(compartiendoPagina||!pdfDoc||!libroActual)return;
+  const plugin=pluginCompartirPagina();
+  if(!plugin){toast('Compartir con IA solo está disponible en la app Android.');return;}
+  const pageNumber=libroActual.page,button=/** @type {HTMLButtonElement} */(document.getElementById('sharePage'));
+  compartiendoPagina=true;button.disabled=true;button.setAttribute('aria-busy','true');
+  toast('Preparando la página '+pageNumber+'…');
+  let nativeStarted=false;
+  try{
+    try{
+      await plugin.begin({prompt:PAGE_SHARE_PROMPT,packageName:DEEPSEEK_PACKAGE,pageNumber});
+      nativeStarted=true;
+    }catch(e){throw errorCompartir('cache',e);}
+
+    preloadTok++;cancelarPost();
+    cache.forEach(soltar);cache.clear();cacheKey='';
+    let rendered;
+    try{
+      const page=await pdfDoc.getPage(pageNumber);
+      rendered=await PAGE_SHARE.renderPageToPng(page,{
+        displayWidth:Math.max(1,wrap.clientWidth),
+        deviceDensity:window.devicePixelRatio||1,
+        densityMultiplier:PAGE_SHARE.DEFAULT_DENSITY_MULTIPLIER,
+        maxSide:PAGE_SHARE.DEFAULT_MAX_SIDE,
+        maxPixels:PAGE_SHARE.DEFAULT_MAX_PIXELS
+      });
+    }catch(e){throw errorCompartir('render',e);}
+
+    try{
+      await PAGE_SHARE.appendBlob(plugin,rendered.blob);
+      await plugin.finish();
+      nativeStarted=false;
+    }catch(e){throw errorCompartir('share',e);}
+  }catch(error){
+    if(nativeStarted&&plugin.abort)try{await plugin.abort();}catch(e){}
+    console.warn('No se pudo compartir la página.',error);
+    if(error.ascuaStage==='render')toast('No se pudo preparar esta página para compartir.');
+    else if(error.code==='NO_SHARE_TARGET')toast('No hay una app disponible para recibir la imagen.');
+    else if(error.code==='CLIPBOARD_FAILED')toast('No se pudo copiar el prompt al portapapeles.');
+    else toast('No se pudo guardar o compartir la imagen. Revisa el espacio disponible.');
+  }finally{
+    compartiendoPagina=false;button.disabled=false;button.removeAttribute('aria-busy');
+    if(libroActual&&document.getElementById('reader').classList.contains('on'))programarPost(libroActual.page);
+  }
+}
 
 /**
  * @param {string} [bookId]
@@ -1016,6 +1085,7 @@ window.addEventListener('resize',()=>{
 
 document.getElementById('closeRead').onclick=cerrarLector;
 document.getElementById('pageCheck').onclick=alternarPaginaGuardada;
+document.getElementById('sharePage').onclick=compartirPaginaActual;
 document.getElementById('zoomIn').onclick=()=>cambiarZoom(libroActual.zoom+.25);
 document.getElementById('zoomOut').onclick=()=>cambiarZoom(libroActual.zoom-.25);
 document.getElementById('pageRange').oninput=ev=>{
@@ -1219,6 +1289,7 @@ window.addEventListener('pagehide',()=>{
   }else{show('scOnboard');}
 
   const esNativa=!!(window.Capacitor&&window.Capacitor.isNativePlatform&&window.Capacitor.isNativePlatform());
+  if(esNativa&&pluginCompartirPagina())document.getElementById('sharePage').classList.remove('hidden');
   if(!esNativa&&'serviceWorker' in navigator){
     navigator.serviceWorker.register('sw.js').catch(()=>{});
   }

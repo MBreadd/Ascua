@@ -6,6 +6,7 @@
 interface Window {
   Capacitor?: any;
   AscuaLibrary?: any;
+  AscuaPageShare?: any;
   AscuaStreak?: any;
   pdfjsLib?: any;
   'pdfjs-dist/build/pdf'?: any;

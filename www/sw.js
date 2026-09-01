@@ -1,9 +1,10 @@
-const CACHE = 'ascua-v19';
+const CACHE = 'ascua-v20';
 
 const LOCAL = [
   './',
   './index.html',
   './app.js',
+  './page-share.js',
   './library.js',
   './streak.js',
   './manifest.json',
