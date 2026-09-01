@@ -47,7 +47,7 @@ const PAGE_SHARE=window.AscuaPageShare;
 if(!PAGE_SHARE)throw new Error('No se cargó el módulo para compartir páginas.');
 
 const DEEPSEEK_PACKAGE='com.deepseek.chat';
-const PAGE_SHARE_PROMPT=`Esta es una página de un libro que estoy leyendo. Explícamela en español, en términos simples.
+const PAGE_SHARE_PROMPT=`Explícamela en español, en términos simples.
 
 - Empieza con la idea central en dos o tres líneas.
 - Luego desarrolla los puntos importantes.
@@ -623,6 +623,8 @@ const wrap=document.getElementById('pageWrap'), stage=document.getElementById('p
       surface=document.getElementById('pageSurface'),
       canvas=/** @type {HTMLCanvasElement} */(document.getElementById('pageCanvas')),
       textLayer=document.getElementById('textLayer'), spin=document.getElementById('spin');
+const PASO_CALIDAD=.25,MAX_CANVAS_CACHE=3,MAX_PIXELS_CACHE=6000000;
+const ESPERA_CALIDAD_ACTUAL=200,ESPERA_PRECARGA_VECINA=1200;
 let cache=new Map(), pending=new Map(), cacheKey='', renderTok=0, preloadTok=0;
 let canvasBaseW=0,canvasBaseH=0,canvasQuality=1,qualityT=null,qualityTok=0,qualityTask=null;
 let textTok=0,textRenderTask=null,postTimers=[],interactuando=false;
@@ -646,8 +648,23 @@ async function compartirPaginaActual(){
   toast('Preparando la página '+pageNumber+'…');
   let nativeStarted=false;
   try{
+    let titulo='';
     try{
-      await plugin.begin({prompt:PAGE_SHARE_PROMPT,packageName:DEEPSEEK_PACKAGE,pageNumber});
+      const datos=await pdfDoc.getMetadata();
+      titulo=String((datos&&datos.info&&datos.info.Title)||
+        (datos&&datos.metadata&&datos.metadata.get&&datos.metadata.get('dc:title'))||'')
+        .replace(/\s+/g,' ').trim();
+    }catch(e){}
+    if(!titulo)try{
+      const registro=await kvGet('book:'+libroActual.id);
+      titulo=String((registro&&registro.name)||'').replace(/\.pdf\s*$/i,'')
+        .replace(/\s+/g,' ').trim();
+    }catch(e){}
+    if(titulo.length>120)titulo=titulo.slice(0,117).trimEnd()+'…';
+    const prompt=(titulo?'Esta es la página '+pageNumber+' del libro «'+titulo+'».':
+      'Esta es una página de un libro que estoy leyendo.')+'\n\n'+PAGE_SHARE_PROMPT;
+    try{
+      await plugin.begin({prompt,packageName:DEEPSEEK_PACKAGE,pageNumber});
       nativeStarted=true;
     }catch(e){throw errorCompartir('cache',e);}
 
@@ -706,24 +723,39 @@ async function abrirLibro(bookId){
 
 function keyNow(){return String(Math.round(wrap.clientWidth));}
 function densidadBase(){return Math.min(window.devicePixelRatio||1,2);}
+function calidadCuantizada(zoom){
+  zoom=Math.max(1,Math.min(3,Number(zoom)||1));
+  return Math.ceil((zoom-1e-6)/PASO_CALIDAD)*PASO_CALIDAD;
+}
 function soltar(c){c.width=0;c.height=0;}
 function revisarCache(){const k=keyNow();
   if(k!==cacheKey){cache.forEach(soltar);cache.clear();cacheKey=k;}}
 function podar(n){
-  cache.forEach((c,k)=>{if(k<n-1||k>n+2){soltar(c);cache.delete(k);}});
   let pixels=0;cache.forEach(c=>pixels+=c.width*c.height);
-  const maxPixelsCache=6000000;
-  for(const k of [n-1,n+2]){
-    if(pixels<=maxPixelsCache)break;
+  while(cache.size>MAX_CANVAS_CACHE||pixels>MAX_PIXELS_CACHE){
+    const candidatos=[...cache.keys()].filter(k=>k!==n)
+      .sort((a,b)=>Math.abs(b-n)-Math.abs(a-n));
+    const k=candidatos[0];
+    if(k===undefined)break;
     const c=cache.get(k);if(!c)continue;
     pixels-=c.width*c.height;soltar(c);cache.delete(k);
   }
+}
+
+function cancelarPendientes(soloSegundoPlano=false){
+  pending.forEach((entrada,clave)=>{
+    if(soloSegundoPlano&&!entrada.segundoPlano)return;
+    entrada.cancelada=true;
+    if(entrada.renderTask)try{entrada.renderTask.cancel();}catch(e){}
+    if(pending.get(clave)===entrada)pending.delete(clave);
+  });
 }
 
 async function pintarOff(n,calidad=1,alCrearTarea=null,segundoPlano=false,densidad=null,promover=true){
   const page=await pdfDoc.getPage(n);
   const base=page.getViewport({scale:1});
   const dpr=densidad===null?densidadBase():densidad;
+  calidad=calidadCuantizada(calidad);
   const ajuste=wrap.clientWidth/base.width;
   let escala=ajuste*dpr*Math.max(1,calidad);
   let vp=page.getViewport({scale:escala});
@@ -742,11 +774,16 @@ async function pintarOff(n,calidad=1,alCrearTarea=null,segundoPlano=false,densid
     if(window.requestIdleCallback)requestIdleCallback(()=>continuar(),{timeout:120});
     else setTimeout(continuar,16);
   };
-  await tarea.promise;
-  off._w=base.width*ajuste; off._h=base.height*ajuste;
-  off._density=dpr;off._quality=calidad*(dpr/densidadBase());
-  page.cleanup();
-  return off;
+  let terminado=false;
+  try{
+    await tarea.promise;
+    off._w=base.width*ajuste; off._h=base.height*ajuste;
+    off._density=dpr;off._quality=calidad*(dpr/densidadBase());
+    terminado=true;return off;
+  }finally{
+    if(!terminado)soltar(off);
+    try{page.cleanup();}catch(e){}
+  }
 }
 function aplicarTamanoZoom(zoom){
   if(!canvasBaseW||!canvasBaseH)return;
@@ -767,23 +804,23 @@ function cancelarCalidad(){
 }
 function programarCalidad(n){
   cancelarCalidad();
-  const zoomActual=libroActual?libroActual.zoom:1;
-  if(zoomActual<=1.05){
-    const base=cache.get(n);if(canvasQuality>1.05&&base)volcar(base);return;
-  }
-  if(canvasQuality>=zoomActual-.05)return;
-  const tok=qualityTok,pagina=n,zoom=zoomActual,k=cacheKey;
+  const calidad=calidadCuantizada(libroActual?libroActual.zoom:1);
+  if(canvasQuality>=calidad-.01)return false;
+  const tok=qualityTok,pagina=n,k=cacheKey;
   qualityT=setTimeout(async()=>{
-    const guardada=cache.get(pagina);
-    if(!guardada||(guardada._density||0)<densidadBase()-.01){
-      if(tok===qualityTok&&pagina===libroActual.page)programarCalidad(pagina);return;
+    qualityT=null;
+    let off,tareaActual=null;
+    try{
+      off=await obtenerOff(pagina,false,false,true,calidad,t=>{tareaActual=t;qualityTask=t;});
+    }catch(e){
+      if(qualityTask===tareaActual)qualityTask=null;return;
     }
-    let off;
-    try{off=await pintarOff(pagina,zoom,t=>qualityTask=t);}catch(e){qualityTask=null;return;}
-    qualityTask=null;
-    if(tok!==qualityTok||pagina!==libroActual.page||k!==cacheKey||Math.abs(zoom-libroActual.zoom)>.02){soltar(off);return;}
-    volcar(off);soltar(off);
-  },1200);
+    if(qualityTask===tareaActual)qualityTask=null;
+    if(tok!==qualityTok||pagina!==libroActual.page||k!==cacheKey||
+      calidad!==calidadCuantizada(libroActual.zoom))return;
+    volcar(off);programarPrecarga(pagina);
+  },ESPERA_CALIDAD_ACTUAL);
+  return true;
 }
 async function pintarTexto(n){
   const tok=++textTok;
@@ -806,6 +843,7 @@ async function pintarTexto(n){
 }
 function cancelarPost(){
   postTimers.forEach(clearTimeout);postTimers=[];
+  preloadTok++;cancelarPendientes(true);
   if(textRenderTask){try{textRenderTask.cancel();}catch(e){}textRenderTask=null;
     textTok++;textLayer.replaceChildren();}
   cancelarCalidad();
@@ -813,19 +851,17 @@ function cancelarPost(){
 function despues(ms,fn){const id=setTimeout(()=>{
   postTimers=postTimers.filter(x=>x!==id);fn();
 },ms);postTimers.push(id);}
+function programarPrecarga(n){
+  despues(ESPERA_PRECARGA_VECINA,()=>{
+    if(n===libroActual.page&&!interactuando&&!qualityTask)precargarAlrededor(n);
+  });
+}
 function programarPost(n){
   postTimers.forEach(clearTimeout);postTimers=[];
-  const actual=cache.get(n),baseDpr=densidadBase();
-  if(actual&&actual._density>=baseDpr-.01&&canvasQuality<.99&&!interactuando)volcar(actual);
-  else if(!actual||actual._density<baseDpr-.01)despues(320,async()=>{
-    let mejor;
-    try{mejor=await obtenerOff(n,true,false,false);}catch(e){return;}
-    if(n===libroActual.page&&mejor&&!interactuando&&canvasQuality<1.05)volcar(mejor);
-  });
   if(!textLayer.childElementCount)despues(850,()=>{
     if(n===libroActual.page)pintarTexto(n);
   });
-  programarCalidad(n);
+  if(!programarCalidad(n))programarPrecarga(n);
 }
 function actualizarPosicion(n,actualizarRange=true){
   const texto='Página '+n+' de '+libroActual.totalPages;
@@ -839,35 +875,41 @@ function actualizarPosicion(n,actualizarRange=true){
     rg.max=String(libroActual.totalPages);rg.value=String(n);
   }
 }
-async function obtenerOff(n,segundoPlano=false,ligera=false,promover=true,calidad=1){
+async function obtenerOff(n,segundoPlano=false,ligera=false,promover=true,calidad=1,alCrearTarea=null){
   revisarCache();
+  calidad=calidadCuantizada(calidad);
   const requerida=ligera?Math.min(1,densidadBase()):densidadBase();
   const existente=cache.get(n);
   if(existente&&(existente._density||densidadBase())>=requerida-.01&&
-    (existente._quality||1)>=calidad-.01)return existente;
+    (existente._quality||1)>=calidad-.01){
+    cache.delete(n);cache.set(n,existente);return existente;
+  }
   const clave=cacheKey+'#'+n+'@'+requerida.toFixed(2)+'x'+calidad.toFixed(2);
-  if(pending.has(clave))return pending.get(clave);
+  if(pending.has(clave))return pending.get(clave).promise;
   const k=cacheKey;
-  const tarea=pintarOff(n,calidad,null,segundoPlano,requerida,promover).then(off=>{
+  const entrada={segundoPlano,cancelada:false,renderTask:null,promise:null};
+  const tarea=pintarOff(n,calidad,t=>{
+    entrada.renderTask=t;if(alCrearTarea)alCrearTarea(t);
+    if(entrada.cancelada)try{t.cancel();}catch(e){}
+  },segundoPlano,requerida,promover).then(off=>{
     if(k===cacheKey&&n>=libroActual.page-1&&n<=libroActual.page+2){
       const anterior=cache.get(n);
       if(!anterior||anterior.width*anterior.height<off.width*off.height){
-        cache.set(n,off);if(anterior)soltar(anterior);podar(libroActual.page);return off;
+        if(anterior)soltar(anterior);cache.delete(n);cache.set(n,off);podar(libroActual.page);return off;
       }
       soltar(off);return anterior;
     }
     soltar(off);return null;
-  }).finally(()=>pending.delete(clave));
-  pending.set(clave,tarea);
+  }).finally(()=>{if(pending.get(clave)===entrada)pending.delete(clave);});
+  entrada.promise=tarea;pending.set(clave,entrada);
   return tarea;
 }
 async function precargarAlrededor(n){
   const tok=++preloadTok;
-  for(const p of [n+1,n+2]){
+  for(const p of [n+1]){
     if(tok!==preloadTok)return;
     if(p<1||p>libroActual.totalPages)continue;
-    const calidad=p===n+1?Math.max(1,libroActual.zoom):1;
-    try{await obtenerOff(p,p!==n+1,false,true,calidad);}catch(e){}
+    try{await obtenerOff(p,true,false,false,1);}catch(e){}
   }
 }
 
@@ -875,8 +917,8 @@ async function render(n){
   if(!pdfDoc)return;
   revisarCache();
   const tok=++renderTok;
-  preloadTok++;cancelarPost();textTok++;textLayer.replaceChildren();
-  const calidadNecesaria=Math.max(1,libroActual.zoom);
+  cancelarPost();cancelarPendientes(false);textTok++;textLayer.replaceChildren();
+  const calidadNecesaria=calidadCuantizada(libroActual.zoom);
   let off=cache.get(n);
   if(off&&(off._quality||1)<calidadNecesaria-.01)off=null;
   if(!off){
@@ -888,7 +930,6 @@ async function render(n){
   spin.classList.remove('on');volcar(off);
   podar(n);
   actualizarPosicion(n);
-  precargarAlrededor(n);
   programarPost(n);
 }
 
@@ -947,7 +988,7 @@ function abrirLector(){
 }
 function cerrarLector(){
   volcarSeg(); clearInterval(segTimer); segTimer=null; marca=0;
-  cancelarPost();textTok++;textLayer.replaceChildren();
+  cancelarPost();cancelarPendientes(false);textTok++;textLayer.replaceChildren();
   libroActual.scrollTop=wrap.scrollTop;
   cache.forEach(soltar); cache.clear(); cacheKey='';
   document.getElementById('reader').classList.remove('on');
@@ -981,13 +1022,14 @@ function colocarAncla(cx,cy){
 function cambiarZoom(nuevo){
   nuevo=Math.round(Math.max(MIN_ZOOM,Math.min(MAX_ZOOM,nuevo))*20)/20;
   if(Math.abs(nuevo-libroActual.zoom)<.01)return;
+  cancelarPost();
   pinchAnchorX=(wrap.scrollLeft+wrap.clientWidth/2)/Math.max(1,stage.scrollWidth);
   pinchAnchorY=(wrap.scrollTop+wrap.clientHeight/2)/Math.max(1,stage.scrollHeight);
   libroActual.zoom=nuevo;
   aplicarZoom();
   colocarAncla(wrap.getBoundingClientRect().left+wrap.clientWidth/2,
     wrap.getBoundingClientRect().top+wrap.clientHeight/2);
-  libroActual.scrollTop=wrap.scrollTop;save();precargarAlrededor(libroActual.page);programarPost(libroActual.page);
+  libroActual.scrollTop=wrap.scrollTop;save();programarPost(libroActual.page);
 }
 
 wrap.addEventListener('touchstart',ev=>{
@@ -1026,7 +1068,7 @@ wrap.addEventListener('touchend',ev=>{
       const nuevo=Math.round(pinchZoom*20)/20;
       if(Math.abs(nuevo-libroActual.zoom)>.02)libroActual.zoom=nuevo;
       aplicarZoom();colocarAncla(pinchLastX,pinchLastY);
-      libroActual.scrollTop=wrap.scrollTop;save();precargarAlrededor(libroActual.page);programarPost(libroActual.page);
+      libroActual.scrollTop=wrap.scrollTop;save();programarPost(libroActual.page);
       if(ev.touches.length===1){
         tX=ev.touches[0].clientX;tY=ev.touches[0].clientY;moved=true;
       }else ignorarToque=false;
